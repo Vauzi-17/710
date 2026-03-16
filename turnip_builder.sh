@@ -58,14 +58,14 @@ prepare_workdir(){
 	echo "Downloading mesa source ..." $'\n'
 		git clone $mesasrc --depth=1 --no-single-branch $srcfolder
 		cd $srcfolder
-	echo "Pushing TU_VERSION..."
-		echo "#define TUGEN8_DRV_VERSION \"v$BUILD_VERSION\"" > ./src/freedreno/vulkan/tu_version.h
 }
 
 
 build_lib_for_android(){
 	echo "==== Building Mesa on $1 branch ===="
 	git checkout origin/$1
+	echo "Pushing TU_VERSION..."
+		echo "#define TUGEN8_DRV_VERSION \"v$BUILD_VERSION\"" > ./src/freedreno/vulkan/tu_version.h
 	#Workaround for using Clang as c compiler instead of GCC
 	mkdir -p "$workdir/bin"
 	ln -sf "$ndk/clang" "$workdir/bin/cc"
