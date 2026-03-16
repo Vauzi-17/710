@@ -113,25 +113,24 @@ endian = 'little'
 EOF
 
 		meson setup build-android-aarch64 \
-			--cross-file "android-aarch64.txt" \
-			--native-file "native.txt" \
-			--prefix /tmp/turnip-$1 \
-			-Dbuildtype=release \
-			-Db_lto=true \
-   			-Db_lto_mode=thin \
-			-Dstrip=true \
-			-Dplatforms=android \
-			-Dvideo-codecs= \
-			-Dplatform-sdk-version="$sdkver" \
-			-Dandroid-stub=true \
-			-Dgallium-drivers= \
-			-Dvulkan-drivers=freedreno \
-			-Dvulkan-beta=true \
-			-Dfreedreno-kmds=kgsl \
-			-Degl=disabled \
-			-Dplatform-sdk-version=36 \
-			-Dandroid-libbacktrace=disabled \
-			--reconfigure
+		    --cross-file "android-aarch64.txt" \
+		    --native-file "native.txt" \
+		    --prefix /tmp/turnip-$1 \
+		    -Dbuildtype=release \
+		    -Db_lto=false \
+		    -Dstrip=true \
+		    -Dplatforms=android \
+		    -Dvideo-codecs= \
+		    -Dplatform-sdk-version="$sdkver" \
+		    -Dandroid-stub=true \
+		    -Dgallium-drivers= \
+		    -Dvulkan-drivers=freedreno \
+		    -Dvulkan-beta=true \
+		    -Dfreedreno-kmds=kgsl \
+		    -Degl=disabled \
+		    -Dplatform-sdk-version=36 \
+		    -Dandroid-libbacktrace=disabled \
+		    --reconfigure
 
 	echo "Compiling build files ..." $'\n'
 		ninja -C build-android-aarch64 install
