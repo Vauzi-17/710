@@ -144,7 +144,7 @@ EOF
 	cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "A8XX MR v$BUILD_VERSION",
+  "name": "710 v$BUILD_VERSION",
   "description": "710 Built from $1 branch",
   "author": "vauzi",
   "packageVersion": "1",
