@@ -63,80 +63,15 @@ prepare_workdir(){
 
 
 build_lib_for_android(){
-    echo "==== Building Mesa on $1 branch ===="
-    echo "Applying patches... ($2)"
-    wget https://github.com/whitebelyash/mesa-tu8/releases/download/patchset-head-v2/$2
-    if ! git apply --check $2; then
-        echo "Failed to apply $2!"
-        exit 1
-    fi
-    git apply $2
-
-    # Apply A710 patch
-    echo "Applying A710 patch..."
-    python3 - << 'PYEOF'
-import re
-
-filepath = "src/freedreno/common/freedreno_devices.py"
-with open(filepath, "r") as f:
-    content = f.read()
-
-a710_block = '''
-# Adreno 710 - Snapdragon 6 Gen 1 (SM6450)
-#
-# Confirmed hardware: deviceID=0x07010000, GMEM=512KB, num_ccu=2, Vulkan 1.1.128
-#
-# ROOT CAUSE OF SYSMEM ARTIFACT (confirmed from tu_cmd_buffer.cc):
-#   color_ccu_offset = gmem_size - (num_ccu * sysmem_per_ccu_color_cache_size)
-#   depth_ccu_offset = color_ccu_offset - (num_ccu * sysmem_per_ccu_depth_cache_size)
-#   a7xx_base sets sysmem_per_ccu_depth_cache_size = 256KB (for A730 4 CCU).
-#   On A710 (512KB GMEM, 2 CCU): depth_ccu_offset = -128KB OVERFLOW -> ARTIFACT!
-add_gpus([
-        GPUId(710),
-        GPUId(chip_id=0x07010000, name="FD710"),
-        GPUId(chip_id=0xffff07010000, name="FD710"),
-    ], A6xxGPUInfo(
-        CHIP.A7XX,
-        [a7xx_base, a7xx_gen1, GPUProps(
-            sysmem_per_ccu_color_cache_size = 128 * 1024,
-            sysmem_per_ccu_depth_cache_size = 64 * 1024,
-            gmem_ccu_color_cache_fraction = CCUColorCacheFraction.QUARTER.value,
-            has_ray_intersection = False,
-            ubwc_unorm_snorm_int_compatible = True,
-        )],
-        num_ccu = 2,
-        tile_align_w = 32,
-        tile_align_h = 16,
-        tile_max_w = 1024,
-        tile_max_h = 1024,
-        num_vsc_pipes = 32,
-        cs_shared_mem_size = 32 * 1024,
-        wave_granularity = 2,
-        fibers_per_sp = 128 * 2 * 16,
-        highest_bank_bit = 16,
-        magic_regs = a730_magic_regs,
-        raw_magic_regs = a730_raw_magic_regs,
-    ))
-
-'''
-
-# Insert before FD725 entry
-marker = "        # These are named as Adreno730v3 or Adreno725v1."
-if marker not in content:
-    # fallback marker
-    marker = "        GPUId(chip_id=0x07030002, name=\"FD725\")"
-
-if marker in content:
-    content = content.replace(marker, a710_block + marker)
-    with open(filepath, "w") as f:
-        f.write(content)
-    print("A710 patch applied successfully!")
-else:
-    print("ERROR: Could not find insertion point for A710 patch!")
-    exit(1)
-PYEOF
-
-    # ... rest of build script
+	echo "==== Building Mesa on $1 branch ===="
+	#git reset --hard
+	echo "Applying patches... ($2)"
+    	wget https://github.com/whitebelyash/mesa-tu8/releases/download/patchset-head-v2/$2
+		if ! git apply --check $2; then
+			echo "Failed to apply $2!"
+			exit 1
+		fi
+    	git apply $2
 	#git checkout origin/$1
 	#Workaround for using Clang as c compiler instead of GCC
 	mkdir -p "$workdir/bin"
