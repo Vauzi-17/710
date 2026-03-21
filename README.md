@@ -1,5 +1,9 @@
 # Mesa Turnip for Adreno 710
 
+### Supported GPU (Experimental driver)
+- **Adreno 710** 
+- **Adreno 722** 
+
 ## Credits
 
 - **[whitebelyash](https://github.com/whitebelyash/mesa-tu8)** — Original A8XX Mesa patchset (gen8 branch)
