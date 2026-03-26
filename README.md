@@ -1,11 +1,23 @@
-# Mesa Turnip for Adreno 710
+# Mesa Turnip for Adreno 710 / 720 / 722
 
-### Supported GPU (Experimental driver)
-- **Adreno 710** 
-- **Adreno 722** 
+Custom Turnip/Freedreno Vulkan driver package for Android emulators and games, with experimental support for unsupported Adreno variants.
 
-## Credits
+### Supported GPU (Experimental Driver)
+- **Adreno 710**
+- **Adreno 720**
+- **Adreno 722**
 
+### Recommended Usage
+- Use **sysmem** mode for better stability on these GPUs.
+- Performance and compatibility may vary by game/emulator and firmware.
+
+### Available Builds
+- **[Mesa 26.x build](https://github.com/Vauzi-17/710/releases)** (main branch based)
+- **[Mesa 24.3.4 build](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)** (legacy/lower branch option)
+
+### Mesa 24.3.4 build may have lower FPS than Mesa 26.x in some workloads.
+
+### Credits
 - **[whitebelyash](https://github.com/whitebelyash/mesa-tu8)** — Original A8XX Mesa patchset (gen8 branch)
 - **[Mesa Project](https://gitlab.freedesktop.org/mesa/mesa)** — Upstream Turnip/Freedreno Vulkan driver
 
