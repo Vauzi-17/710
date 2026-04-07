@@ -12,9 +12,11 @@ Custom Turnip/Freedreno Vulkan driver package for Android emulators and games, w
 - Performance and compatibility may vary by game/emulator and firmware.
 
 ### Available Builds
-- **[Mesa 26.x build](https://github.com/Vauzi-17/710/releases)** (main branch based)
+- **[Mesa 26.x builds](https://github.com/Vauzi-17/710/releases)** (main branch based)
 - **[Mesa 25.x builds](https://github.com/Vauzi-17/710/releases/tag/m25_710-720-722)** (multiple 25.x variants)
-- **[Mesa 24.3.4 build](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)** (legacy/lower branch option)
+- **Mesa 24.3.4 builds** (legacy/lower branch option)
+  - **[r1](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)**
+  - **[r2](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722_r2)**
 
 ### Mesa 24.3.4 build may have lower FPS than Mesa 26.x in some workloads.
 
