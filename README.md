@@ -7,22 +7,30 @@ Custom Turnip/Freedreno Vulkan driver package for Android emulators and games, w
 - **Adreno 720**
 - **Adreno 722**
 
+### Before You Use
+- Please read the release notes first before using any build.
+- Recommended: always check known issues/notes on each release page.
+
 ### Recommended Usage
 - Use **sysmem** mode for better stability on these GPUs.
 - Performance and compatibility may vary by game/emulator and firmware.
+
+### Support
+- Need help? : **[https://t.me/vauzi_17](https://t.me/vauzi_17)**
 
 ### Available Builds
 - **[Mesa 26.x builds](https://github.com/Vauzi-17/710/releases)** (main branch based)
 - **[Mesa 25.x builds](https://github.com/Vauzi-17/710/releases/tag/m25_710-720-722)** (multiple 25.x variants)
 - **Mesa 24.3.4 builds** (legacy/lower branch option)
-  - **[r1](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)**
-  - **[r2](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722_r2)**
+- **[r1](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)**
+- **[r2](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722_r2)**
 
 ### Mesa 24.3.4 build may have lower FPS than Mesa 26.x in some workloads.
 
 ### Credits
 - **[whitebelyash](https://github.com/whitebelyash/mesa-tu8)** — Original A8XX Mesa patchset (gen8 branch)
 - **[Mesa Project](https://gitlab.freedesktop.org/mesa/mesa)** — Upstream Turnip/Freedreno Vulkan driver
+
 
 Old README:
 <details>
