@@ -121,8 +121,6 @@ add_gpus([
     ], A6xxGPUInfo(
         CHIP.A7XX,
         [a7xx_base, a7xx_gen1, GPUProps(
-            sysmem_per_ccu_color_cache_size = 256 * 1024,
-            sysmem_per_ccu_depth_cache_size = 64 * 1024,
             has_gmem_vpc_attr_buf = True,
             sysmem_vpc_attr_buf_size = 131072,
             gmem_vpc_attr_buf_size = 49152,
@@ -150,8 +148,6 @@ add_gpus([
     ], A6xxGPUInfo(
         CHIP.A7XX,
         [a7xx_base, a7xx_gen1, GPUProps(
-            sysmem_per_ccu_color_cache_size = 256 * 1024,
-            sysmem_per_ccu_depth_cache_size = 64 * 1024,
             has_gmem_vpc_attr_buf = True,
             sysmem_vpc_attr_buf_size = 131072,
             gmem_vpc_attr_buf_size = 49152,
@@ -179,8 +175,6 @@ add_gpus([
     ], A6xxGPUInfo(
         CHIP.A7XX,
         [a7xx_base, a7xx_gen1, GPUProps(
-            sysmem_per_ccu_color_cache_size = 256 * 1024,
-            sysmem_per_ccu_depth_cache_size = 64 * 1024,
             has_gmem_vpc_attr_buf = True,
             sysmem_vpc_attr_buf_size = 131072,
             gmem_vpc_attr_buf_size = 49152,
