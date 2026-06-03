@@ -159,7 +159,7 @@ a722_raw_magic_regs = [
         [A6XXRegs.REG_A7XX_SP_HLSQ_DBG_ECO_CNTL, 0x00000000],
         [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x11000000],
 
-        [A6XXRegs.REG_A6XX_PC_MODE_CNTL, 0x00001f1f],
+        [A6XXRegs.REG_A6XX_PC_MODE_CNTL, 0x0000003f],
         [A6XXRegs.REG_A6XX_PC_DBG_ECO_CNTL, 0x20100000],
         [A6XXRegs.REG_A7XX_PC_UNKNOWN_9E24, 0x01fc7f00],
 
@@ -237,7 +237,7 @@ add_gpus([
     ], A6xxGPUInfo(
         CHIP.A7XX,
         [a7xx_base, a7xx_gen1],
-        num_ccu = 4,
+        num_ccu = 3,
         tile_align_w = 64,
         tile_align_h = 32,
         tile_max_w = 1024,
