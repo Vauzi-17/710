@@ -1,35 +1,55 @@
 # Mesa Turnip for Adreno 710 / 720 / 722
 
-Custom Turnip/Freedreno Vulkan driver package for Android emulators and games, with experimental support for unsupported Adreno variants.
+Custom-built Turnip (Mesa Freedreno Vulkan driver) for Android, targeting three Adreno A7-series GPUs that upstream Mesa does not officially list as supported. Built for use with Android emulators and native games via driver-swap frontends (e.g. Winlator, GameHub-style loaders).
 
-### Supported GPU (Experimental Driver)
-- **Adreno 710**
-- **Adreno 720**
-- **Adreno 722**
+## Supported GPUs and Their Host Chipsets
 
-### Before You Use
-- Please read the release notes first before using any build.
-- Recommended: always check known issues/notes on each release page.
+Adreno GPU model numbers are shared across multiple Snapdragon chipset tiers, each with a different CPU. This driver targets the **GPU silicon**, not a specific phone, so it should work across all chipsets below — but CPU performance (and therefore real framerate) will vary by device.
 
-### Recommended Usage
-- Use **sysmem** mode for better stability on these GPUs.
-- Performance and compatibility may vary by game/emulator and firmware.
+| Adreno GPU | Snapdragon chipsets using it |
+|---|---|
+| **710** | 7s Gen 2, 6 Gen 1, 6 Gen 3, 6s Gen 4 |
+| **720** | 7 Gen 3 |
+| **722** | 7 Gen 4 |
 
-### Support
-- Need help? : **[https://t.me/vauzi_17](https://t.me/vauzi_17)**
+## Before You Use
 
-### Available Builds
-- **[Mesa 26.x builds](https://github.com/Vauzi-17/710/releases)** (main branch based)
-- **[Mesa 25.x builds](https://github.com/Vauzi-17/710/releases/tag/m25_710-720-722)** (multiple 25.x variants)
-- **Mesa 24.3.4 builds** (legacy/lower branch option)
-- **[r1](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)**
-- **[r2](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722_r2)**
+- Read the release notes for the specific build you're downloading — behavior differs meaningfully between Mesa 24.x, 25.x, and 26.x branches.
+- Check the "known issues" section on each release page before reporting a bug.
 
-### Mesa 24.3.4 build may have lower FPS than Mesa 26.x in some workloads.
+## Recommended Usage
 
-### Credits
-- **[whitebelyash](https://github.com/whitebelyash/mesa-tu8)** — Original A8XX Mesa patchset (gen8 branch)
-- **[Mesa Project](https://gitlab.freedesktop.org/mesa/mesa)** — Upstream Turnip/Freedreno Vulkan driver
+- Use **sysmem** mode for better stability on all three GPUs — GMEM mode is more prone to rendering artifacts on this unsupported configuration. Enable it by setting the environment variable `TU_DEBUG=sysmem` before launching the game/emulator.
+
+## Testing
+
+<p align="center">
+  <img src="eden-emulator.jpg" width="48%" />
+  <img src="winlator-ludashi.png" width="48%" />
+</p>
+
+## Available Builds
+
+**Mesa 26.x** (main branch)
+[Releases →](https://github.com/Vauzi-17/710/releases)
+
+**Mesa 25.x** (multiple variant builds)
+[Releases →](https://github.com/Vauzi-17/710/releases/tag/m25_710-720-722)
+
+**Mesa 24.3.4** (legacy branch)
+- [r1](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722)
+- [r2](https://github.com/Vauzi-17/710/releases/tag/m24.3.4_710-720-722_r2)
+
+Note: in our testing, Mesa 24.3.4 tends to run lower FPS than Mesa 26.x on the same workloads. Try 26.x first unless you have a specific compatibility reason to use the legacy branch.
+
+## Support
+
+Questions or issues: **[t.me/vauzi_17](https://t.me/vauzi_17)**
+
+## Credits
+
+- [whitebelyash](https://github.com/whitebelyash/mesa-tu8) — original A8XX Mesa patchset (gen8 branch) this work is based on
+- [Mesa Project](https://gitlab.freedesktop.org/mesa/mesa) — upstream Turnip/Freedreno Vulkan driver
 
 
 Old README:
