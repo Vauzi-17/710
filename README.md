@@ -46,7 +46,9 @@ Note: in our testing, Mesa 24.3.4 tends to run lower FPS than Mesa 26.x on the s
 
 Builds come from upstream Mesa `main` ([gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa)), plus whatever is in [`patches/`](patches/README.md). An empty `patches/` folder means a plain upstream build.
 
-- **GitHub Actions**: run the *Build "turnip"* workflow with a version such as `3.9`. The workflow creates the release, generates the notes, and attaches `Turnip-710-720-722-v<version>.zip`, plus one extra zip for each folder under `patches/variants/`.
+- **GitHub Actions**: run the *Build "turnip"* workflow. Leave the version empty to use the previous release + 1 (3.8 → 3.9, 3.9 → 4.0), or type one yourself. The workflow creates the release, generates the notes, and attaches `Turnip-710-720-722-v<version>.zip`, plus one extra zip for each folder under `patches/variants/`.
+- **Weekly build**: the same workflow runs every Sunday at 00:00 UTC with an automatic version. It is skipped when neither Mesa `main` nor this repo changed since the previous release.
+- **Patch check**: every push that touches `patches/` runs the *Check patches* workflow. It applies the patches to the current Mesa `main` without compiling, so a patch that no longer fits upstream shows up in a few minutes.
 - **Locally**: `BUILD_VERSION=3.9 bash turnip_builder.sh`. Output goes to `out/`.
 - **Check patches only** (no NDK, no compile): `BUILD_VERSION=test PATCH_ONLY=1 bash turnip_builder.sh`.
 

@@ -1,12 +1,16 @@
 name: Build "turnip"
 
 on:
+  schedule:
+    # Every Sunday 00:00 UTC (07:00 WIB).
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version, e.g. 3.9 (also the tag name)'
-        required: true
+        description: 'Release version, e.g. 3.9. Empty = previous release + 1 (3.8 -> 3.9, 3.9 -> 4.0)'
+        required: false
         type: string
+        default: ''
       changes:
         description: 'Changes for the release notes, separated by ";" (optional)'
         required: false
@@ -33,8 +37,10 @@ on:
         type: boolean
         default: false
 
+# One release build at a time, so two runs can never pick the same version.
 concurrency:
-  group: turnip-build-${{ inputs.version }}
+  group: turnip-release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -43,25 +49,71 @@ jobs:
     permissions:
       contents: write
     env:
-      BUILD_VERSION: ${{ inputs.version }}
-      MESA_REF: ${{ inputs.mesa_ref }}
-      BUILD_VARIANTS: ${{ inputs.variants }}
+      # Scheduled runs have no inputs, so every input falls back to its default.
+      MESA_REPO: https://gitlab.freedesktop.org/mesa/mesa
+      MESA_REF: ${{ inputs.mesa_ref || 'main' }}
+      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
+      DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
       NDK_VERSION: android-ndk-r29
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1G
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-    # Fail in seconds instead of after a full build.
-    - name: Check that the tag is free
-      if: inputs.release
+    - name: Resolve version
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if git ls-remote --exit-code --tags origin "refs/tags/${BUILD_VERSION}" >/dev/null; then
-          echo "::error::Tag ${BUILD_VERSION} already exists. Pick another version or delete the old release first."
+        set -euo pipefail
+        releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                     --jq '.[] | select(.draft == false) | .tag_name')
+        # Only plain version tags (3.8, 2.6.3); older tags like tu_v1.8 or m25_* are skipped.
+        latest=$(echo "$releases" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1 || true)
+
+        if [ -n "$INPUT_VERSION" ]; then
+          version="$INPUT_VERSION"
+        elif [ -z "$latest" ]; then
+          echo "::error::No previous release found, run the workflow once with a version."
+          exit 1
+        else
+          major=${latest%%.*}
+          rest=${latest#*.}
+          minor=${rest%%.*}
+          if [ "$minor" -ge 9 ]; then
+            version="$((major + 1)).0"
+          else
+            version="${major}.$((minor + 1))"
+          fi
+        fi
+        echo "Previous release: ${latest:-none}, this build: ${version}"
+        echo "BUILD_VERSION=${version}" >> "$GITHUB_ENV"
+
+        if [ "$DO_RELEASE" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
+          echo "::error::Tag ${version} already exists. Pick another version or delete the old release first."
           exit 1
         fi
 
+        # A scheduled build is skipped when neither Mesa nor this repo changed
+        # since the previous release, so the same driver is not released twice.
+        skip=false
+        if [ "${{ github.event_name }}" = "schedule" ] && [ -n "$latest" ]; then
+          prev_mesa=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${latest}" --jq .body \
+                        | grep -oE 'mesa/-/commit/[0-9a-f]{40}' | head -n1 | cut -d/ -f3 || true)
+          mesa_now=$(git ls-remote "$MESA_REPO" "refs/heads/${MESA_REF}" | cut -f1)
+          repo_changes=$(git rev-list --count "refs/tags/${latest}..HEAD" 2>/dev/null || echo 1)
+          echo "Mesa: previous ${prev_mesa:-unknown}, now ${mesa_now}. Repo commits since ${latest}: ${repo_changes}"
+          if [ -n "$prev_mesa" ] && [ "$prev_mesa" = "$mesa_now" ] && [ "$repo_changes" = "0" ]; then
+            skip=true
+            echo "Nothing changed since ${latest}, skipping this week's build." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
+        echo "SKIP=${skip}" >> "$GITHUB_ENV"
+
     - name: Prepare environment
+      if: env.SKIP != 'true'
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
@@ -71,12 +123,14 @@ jobs:
         meson --version
 
     - name: Cache Android NDK
+      if: env.SKIP != 'true'
       uses: actions/cache@v4
       with:
         path: turnip_workdir/${{ env.NDK_VERSION }}
         key: ndk-${{ env.NDK_VERSION }}
 
     - name: Cache ccache
+      if: env.SKIP != 'true'
       uses: actions/cache@v4
       with:
         path: .ccache
@@ -84,9 +138,11 @@ jobs:
         restore-keys: ccache-
 
     - name: Execute build script
+      if: env.SKIP != 'true'
       run: bash ./turnip_builder.sh 2>&1 | tee build.log
 
     - name: Generate release notes
+      if: env.SKIP != 'true'
       env:
         GH_TOKEN: ${{ github.token }}
         CHANGES: ${{ inputs.changes }}
@@ -95,9 +151,10 @@ jobs:
         cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload build output
+      if: env.SKIP != 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: turnip-v${{ inputs.version }}
+        name: turnip-v${{ env.BUILD_VERSION }}
         path: |
           out/
           RELEASE_NOTES.md
@@ -105,12 +162,12 @@ jobs:
         if-no-files-found: error
 
     - name: Release "turnip"
-      if: inputs.release
+      if: env.SKIP != 'true' && env.DO_RELEASE == 'true'
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ inputs.version }}
-        name: Turnip Adreno 710,720,722 v${{ inputs.version }}
+        tag_name: ${{ env.BUILD_VERSION }}
+        name: Turnip Adreno 710,720,722 v${{ env.BUILD_VERSION }}
         body_path: RELEASE_NOTES.md
-        draft: ${{ inputs.draft }}
+        draft: ${{ inputs.draft || false }}
         files: out/*.zip
         fail_on_unmatched_files: true

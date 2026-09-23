@@ -156,6 +156,36 @@ def upstream_commits(prev, mesa_commit, mesa_ref):
     return prev, commits
 
 
+A7XX_RE = re.compile(r"\ba7(xx|\d\d)\b", re.I)
+
+
+def group_commits(commits):
+    """Split commits into display groups, based on the commit title only.
+
+    Anything mentioning A7xx comes first, whatever its prefix. The rest is
+    sorted by the "prefix:" part of the title, so a commit with an unusual
+    prefix can land in the wrong group.
+    """
+    groups = {"A7xx": [], "Turnip (tu)": [], "Compiler (ir3)": [], "Other": []}
+    for sha, subject in commits:
+        prefix = subject.split(":", 1)[0].strip().lower() if ":" in subject else ""
+        if A7XX_RE.search(subject):
+            key = "A7xx"
+        elif re.match(r"(tu|turnip)\b", prefix):
+            key = "Turnip (tu)"
+        elif re.match(r"ir3\b", prefix):
+            key = "Compiler (ir3)"
+        else:
+            key = "Other"
+        groups[key].append((sha, subject))
+    return [(title, group) for title, group in groups.items() if group]
+
+
+def escape(text):
+    """Keep commit titles from being read as HTML inside <details>."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def main():
     info_path = OUT_DIR / "build-info.env"
     if not info_path.exists():
@@ -236,17 +266,19 @@ def main():
         if not commits:
             add("No new commits under `src/freedreno`.")
         else:
-            add(f"{len(commits)} commits under `src/freedreno`.")
+            add(f"{len(commits)} commits under `src/freedreno`, grouped by commit title.")
             add("")
-            add("<details>")
-            add("<summary>Commit list</summary>")
-            add("")
-            for sha, subject in commits[:MAX_UPSTREAM_COMMITS]:
-                add(f"- [`{sha[:10]}`]({MESA_WEB}/-/commit/{sha}) {subject}")
-            if len(commits) > MAX_UPSTREAM_COMMITS:
-                add(f"- ... and {len(commits) - MAX_UPSTREAM_COMMITS} more")
-            add("")
-            add("</details>")
+            for title, group in group_commits(commits):
+                add("<details>")
+                add(f"<summary>{title} ({len(group)})</summary>")
+                add("")
+                for sha, subject in group[:MAX_UPSTREAM_COMMITS]:
+                    add(f"- [`{sha[:10]}`]({MESA_WEB}/-/commit/{sha}) {escape(subject)}")
+                if len(group) > MAX_UPSTREAM_COMMITS:
+                    add(f"- ... and {len(group) - MAX_UPSTREAM_COMMITS} more")
+                add("")
+                add("</details>")
+                add("")
         add("")
 
     add("## GPU Support")

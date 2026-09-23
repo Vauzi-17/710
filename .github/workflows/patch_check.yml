@@ -1,0 +1,62 @@
+name: Check patches
+
+# Applies patches/ to the current Mesa main without compiling, so a patch that
+# no longer fits upstream shows up within minutes instead of in a failed release.
+on:
+  push:
+    paths:
+      - 'patches/**'
+      - 'turnip_builder.sh'
+      - '.github/workflows/patch_check.yml'
+  pull_request:
+    paths:
+      - 'patches/**'
+      - 'turnip_builder.sh'
+      - '.github/workflows/patch_check.yml'
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: 'Mesa branch, tag or commit'
+        required: false
+        type: string
+        default: 'main'
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: patch-check
+      PATCH_ONLY: '1'
+      MESA_REF: ${{ inputs.mesa_ref || 'main' }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Apply patches to Mesa ${{ env.MESA_REF }}
+      run: bash ./turnip_builder.sh
+
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo "### Patch check against Mesa ${MESA_REF}"
+          if [ -f out/build-info.env ]; then
+            grep -E '^(MESA_COMMIT|MESA_VERSION)=' out/build-info.env | sed 's/^/- /'
+          fi
+          echo
+          found=0
+          for f in out/patches-*.txt; do
+            [ -s "$f" ] || continue
+            found=1
+            variant=$(basename "$f" .txt); variant=${variant#patches-}
+            echo "**${variant}**"
+            echo
+            echo "| Patch | Result |"
+            echo "|---|---|"
+            sed 's/\t/ | /; s/^/| /; s/$/ |/' "$f"
+            echo
+          done
+          [ "$found" = 1 ] || echo "No patches in patches/, nothing to check."
+        } >> "$GITHUB_STEP_SUMMARY"
