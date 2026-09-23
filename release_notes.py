@@ -61,7 +61,7 @@ def patch_description(path):
     if path.suffix == ".py":
         m = re.search(r'^\s*(?:"""|\'\'\')\s*\n?\s*(.+)$', text, re.M)
         if m:
-            return m.group(1).strip().rstrip(".")
+            return m.group(1).strip().rstrip("\"'").rstrip(".")
 
     for line in text.splitlines():
         line = line.strip()
@@ -122,10 +122,17 @@ def git(*args):
                           capture_output=True, text=True)
 
 
-def upstream_commits(prev, mesa_commit, mesa_ref):
+def upstream_commits(prev, mesa_commit, mesa_ref, mesa_repo):
     """freedreno commits between the previous release's Mesa commit and ours."""
-    if not prev or not (MESA_SRC / ".git").exists():
+    if not prev:
         return None
+    if not (MESA_SRC / ".git").exists():
+        # Release job without a build tree: history only, no file contents.
+        MESA_SRC.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+        git("remote", "add", "origin", mesa_repo)
+        git("config", "remote.origin.partialclonefilter", "blob:none")
+        git("config", "remote.origin.promisor", "true")
 
     m = re.search(r"mesa/-/commit/([0-9a-f]{40})", prev.get("body") or "")
     prev_commit = m.group(1) if m else None
@@ -136,8 +143,9 @@ def upstream_commits(prev, mesa_commit, mesa_ref):
 
     # The build clone is shallow; fetch enough history to reach the old commit.
     fetch_since = (since - timedelta(days=14)).strftime("%Y-%m-%d")
-    if git("fetch", "-q", f"--shallow-since={fetch_since}", "origin", mesa_ref).returncode != 0:
-        git("fetch", "-q", "--deepen=1000", "origin", mesa_ref)
+    if git("fetch", "-q", "--filter=blob:none", f"--shallow-since={fetch_since}",
+           "origin", mesa_ref).returncode != 0:
+        git("fetch", "-q", "--filter=blob:none", "--depth=1000", "origin", mesa_ref)
 
     if prev_commit and prev_commit == mesa_commit:
         return prev, []
@@ -194,12 +202,23 @@ def main():
 
     version = info["BUILD_VERSION"]
     mesa_commit = info["MESA_COMMIT"]
-    ndk = info.get("NDK_VERSION", "").replace("android-ndk-", "")
-    zips = list(OUT_DIR.glob("*.zip"))
-    variants_of = {z: z.stem.rsplit(f"v{version}", 1)[-1].lstrip("-") or "base" for z in zips}
-    # Standard build first, variants after it.
-    zips.sort(key=lambda z: (variants_of[z] != "base", z.name))
-    variants = [variants_of[z] for z in zips]
+    android = read_env_file(OUT_DIR / "android-info.env") if (OUT_DIR / "android-info.env").exists() else {}
+    glibc = read_env_file(OUT_DIR / "glibc-info.env") if (OUT_DIR / "glibc-info.env").exists() else {}
+    ndk = android.get("NDK_VERSION", "").replace("android-ndk-", "")
+
+    # File name: <prefix>-v<version>[-<variant>][-glibc].zip|.tzst
+    files = list(OUT_DIR.glob("*.zip")) + list(OUT_DIR.glob("*.tzst"))
+    kind_of = {}
+    for f in files:
+        rest = f.stem.rsplit(f"v{version}", 1)[-1].lstrip("-")
+        target = "android"
+        if f.suffix == ".tzst":
+            target = "glibc"
+            rest = rest[:-len("glibc")].rstrip("-") if rest.endswith("glibc") else rest
+        kind_of[f] = (rest or "base", target)
+    # Android first, then glibc; standard build before variants.
+    files.sort(key=lambda f: (kind_of[f][1] != "android", kind_of[f][0] != "base", f.name))
+    variants = list(dict.fromkeys(kind_of[f][0] for f in files))
 
     lines = []
     add = lines.append
@@ -233,6 +252,9 @@ def main():
     add(f"| Vulkan | {info['VULKAN_VERSION']} |")
     if ndk:
         add(f"| Android NDK | {ndk} |")
+    if glibc:
+        add(f"| glibc build host | {glibc.get('GLIBC_BUILD_HOST', '')} |")
+        add(f"| glibc build requires | glibc {glibc.get('GLIBC_REQUIRED', '?')} or newer in the rootfs |")
     add(f"| Build date | {datetime.now(timezone.utc).strftime('%Y-%m-%d')} |")
     add("")
 
@@ -240,9 +262,11 @@ def main():
     base = [n for n, s in read_patch_log("base") if s == "applied"]
     extras = {v: [n for n, s in read_patch_log(v) if s == "applied" and n not in base]
               for v in variants if v != "base"}
-    if base or any(extras.values()):
+    glibc_only = list(dict.fromkeys(
+        n for v in variants for n, s in read_patch_log(f"glibc-{v}") if s == "applied"))
+    if base or any(extras.values()) or glibc_only:
         add("## Applied Patches")
-    if not base and any(extras.values()):
+    if not base and (any(extras.values()) or glibc_only):
         add("None in the standard build.")
     for name in base:
         desc = patch_description(PATCH_DIR / name)
@@ -255,10 +279,17 @@ def main():
         for name in extra:
             desc = patch_description(PATCH_DIR / name)
             add(f"- `{Path(name).name}`" + (f" — {desc}" if desc else ""))
-    if base or any(extras.values()):
+    if glibc_only:
+        add("")
+        add("Only in the glibc build:")
+        for name in glibc_only:
+            desc = patch_description(PATCH_DIR / name)
+            add(f"- `{Path(name).name}`" + (f" — {desc}" if desc else ""))
+    if base or any(extras.values()) or glibc_only:
         add("")
 
-    result = upstream_commits(previous_release(), mesa_commit, info.get("MESA_REF", "main"))
+    result = upstream_commits(previous_release(), mesa_commit, info.get("MESA_REF", "main"),
+                              info.get("MESA_REPO", MESA_WEB))
     if result:
         prev, commits = result
         prev_name = prev.get("tag_name", "previous release")
@@ -291,22 +322,34 @@ def main():
     add("- Performance and compatibility vary by device, firmware, emulator version, and game.")
     add("- Recommended memory mode: **sysmem** (`TU_DEBUG=sysmem`).")
     add("- Experimental build.")
+    if glibc:
+        add("- The `.tzst` is a glibc build with X11 presentation, for Winlator and similar"
+            " containers. Extract it into the rootfs. The ICD file points to"
+            f" `{glibc.get('GLIBC_ICD_LIBRARY_PATH', '')}`; edit it if your app uses another path.")
+        extra = glibc.get("GLIBC_EXTRA_LIBS", "").split()
+        if extra:
+            add(f"- The `.tzst` also contains {', '.join(f'`{e}`' for e in extra)} from the build host.")
     add("")
 
     add("## Files")
-    for z, variant in zip(zips, variants):
+    for f in files:
+        variant, target = kind_of[f]
         if variant == "base":
             desc = "standard build"
         else:
             desc = variant_description(variant) or f"{variant} variant"
-        add(f"- `{z.name}` — {desc}")
+        if target == "glibc":
+            desc = f"glibc (Winlator), {desc}"
+        else:
+            desc = f"Android (AdrenoTools), {desc}"
+        add(f"- `{f.name}` — {desc}")
     add("")
     add("<details>")
     add("<summary>SHA-256</summary>")
     add("")
     add("```")
-    for z in zips:
-        add(f"{sha256(z)}  {z.name}")
+    for f in files:
+        add(f"{sha256(f)}  {f.name}")
     add("```")
     add("")
     add("</details>")

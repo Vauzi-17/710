@@ -2,15 +2,19 @@
 #
 # Turnip builder for Adreno 710 / 720 / 722.
 #
-# Builds the Freedreno Vulkan driver (Turnip) for Android from upstream Mesa,
-# applies the optional patches in patches/, and packs the result as an
-# AdrenoTools zip.
+# Builds the Freedreno Vulkan driver (Turnip) from upstream Mesa and applies
+# the optional patches in patches/. Two targets:
+#   android  Android/Bionic build, packed as an AdrenoTools zip (default)
+#   glibc    Linux glibc build with X11 WSI, packed as a .tzst for Winlator.
+#            Must run on an aarch64 Linux host; it compiles natively.
 #
 # Usage:
 #   BUILD_VERSION=3.9 bash turnip_builder.sh
+#   BUILD_VERSION=3.9 BUILD_TARGET=glibc bash turnip_builder.sh
 #
 # Settings (environment variables, all optional except BUILD_VERSION):
 #   BUILD_VERSION     Release version, e.g. 3.9 (used in zip name and meta.json)
+#   BUILD_TARGET      android (default) or glibc
 #   MESA_REPO         Mesa git repository   (default: upstream GitLab)
 #   MESA_REF          Branch, tag or commit (default: main)
 #   BUILD_VARIANTS    Which builds to make: "all" (default), or a space
@@ -21,11 +25,16 @@
 #   NDK_VERSION       NDK to download       (default: android-ndk-r29)
 #   PATCH_ONLY=1      Clone and apply patches, then stop (no NDK, no compile).
 #                     Handy for checking whether patches still apply to main.
+#   GLIBC_ICD_LIBRARY_PATH  library_path written to the glibc ICD json
+#                     (default: /data/data/com.winlator/files/rootfs/lib/libvulkan_freedreno.so)
+#   GLIBC_EXTRA_LIBS  Host libraries copied into the .tzst next to the driver
+#                     (default: libxcb-xfixes.so.0, set to "" for none)
 #
 # Patch folder layout (see patches/README.md):
 #   patches/*.patch|*.diff|*.py|*.sh   applied to every build, in name order
 #   patches/variants/<name>/...        extra patches for the <name> variant,
 #                                      which is built as a separate zip
+#   patches/glibc/...                  extra patches for the glibc target only
 #   anything else (README, sub folders, *.off) is ignored
 
 set -euo pipefail
@@ -47,6 +56,9 @@ PATCH_DIR="${PATCH_DIR:-$rootdir/patches}"
 OUT_DIR="${OUT_DIR:-$rootdir/out}"
 NDK_VERSION="${NDK_VERSION:-android-ndk-r29}"
 PATCH_ONLY="${PATCH_ONLY:-0}"
+BUILD_TARGET="${BUILD_TARGET:-android}"
+GLIBC_ICD_LIBRARY_PATH="${GLIBC_ICD_LIBRARY_PATH:-/data/data/com.winlator/files/rootfs/lib/libvulkan_freedreno.so}"
+GLIBC_EXTRA_LIBS="${GLIBC_EXTRA_LIBS-libxcb-xfixes.so.0}"
 
 # The API level the NDK compiler targets, and the one Mesa is configured for.
 sdkver="34"
@@ -72,13 +84,18 @@ die(){
 run_all(){
 	[ -n "$BUILD_VERSION" ] || die "BUILD_VERSION is not set (example: BUILD_VERSION=3.9 bash turnip_builder.sh)"
 
-	info "====== Turnip 710/720/722 v$BUILD_VERSION ======"
+	case "$BUILD_TARGET" in
+	android|glibc) ;;
+	*) die "BUILD_TARGET must be android or glibc, not '$BUILD_TARGET'" ;;
+	esac
+
+	info "====== Turnip 710/720/722 v$BUILD_VERSION ($BUILD_TARGET) ======"
 	check_deps
 	mkdir -p "$workdir"
 	rm -rf "$OUT_DIR"
 	mkdir -p "$OUT_DIR"
 
-	if [ "$PATCH_ONLY" != "1" ]; then
+	if [ "$PATCH_ONLY" != "1" ] && [ "$BUILD_TARGET" = "android" ]; then
 		prepare_ndk
 	fi
 	clone_mesa
@@ -96,7 +113,13 @@ run_all(){
 check_deps(){
 	local deps="git python3 patch"
 	if [ "$PATCH_ONLY" != "1" ]; then
-		deps="$deps meson ninja unzip curl flex bison zip glslangValidator"
+		deps="$deps meson ninja flex bison glslangValidator"
+		if [ "$BUILD_TARGET" = "android" ]; then
+			deps="$deps unzip curl zip"
+		else
+			deps="$deps cc c++ pkg-config tar zstd readelf objdump"
+			[ "$(uname -m)" = "aarch64" ] || die "the glibc target builds natively and needs an aarch64 host (this is $(uname -m))"
+		fi
 	fi
 
 	echo "Checking dependencies ..."
@@ -133,6 +156,7 @@ prepare_ndk(){
 	fi
 	ndk="$ndkroot/toolchains/llvm/prebuilt/linux-x86_64/bin"
 	[ -x "$ndk/aarch64-linux-android$sdkver-clang" ] || die "NDK compiler not found in $ndk"
+	echo "NDK_VERSION=$(basename "$ndkroot")" > "$OUT_DIR/android-info.env"
 }
 
 clone_mesa(){
@@ -165,7 +189,6 @@ MESA_COMMIT=$MESA_COMMIT
 MESA_COMMIT_DATE=$MESA_COMMIT_DATE
 MESA_VERSION=$MESA_VERSION
 VULKAN_VERSION=$VULKAN_VERSION
-NDK_VERSION=$( [ -n "${ANDROID_NDK_HOME:-}" ] && basename "$ANDROID_NDK_HOME" || echo "$NDK_VERSION" )
 EOF
 }
 
@@ -267,6 +290,9 @@ build_variant(){
 	if [ "$variant" != "base" ]; then
 		apply_patch_dir "$PATCH_DIR/variants/$variant" "$patchlog"
 	fi
+	if [ "$BUILD_TARGET" = "glibc" ]; then
+		apply_patch_dir "$PATCH_DIR/glibc" "$OUT_DIR/patches-glibc-$variant.txt"
+	fi
 
 	git -C "$srcdir" diff --stat HEAD | tail -n 1
 
@@ -275,8 +301,13 @@ build_variant(){
 		return 0
 	fi
 
-	compile_mesa "$variant"
-	package_zip "$variant" "$suffix" "$label"
+	if [ "$BUILD_TARGET" = "glibc" ]; then
+		compile_glibc "$variant"
+		package_tzst "$variant" "$suffix"
+	else
+		compile_mesa "$variant"
+		package_zip "$variant" "$suffix" "$label"
+	fi
 }
 
 compile_mesa(){
@@ -387,6 +418,89 @@ EOF
 	[ -f "$OUT_DIR/$zipname" ] || die "failed to pack $zipname"
 	cat "$libdir/meta.json"
 	info "Created $OUT_DIR/$zipname"
+}
+
+compile_glibc(){
+	local variant="$1"
+	builddir="$workdir/build-glibc-$variant"
+	installdir="$workdir/install-glibc-$variant"
+	rm -rf "$builddir" "$installdir"
+
+	echo "Configuring (glibc, X11) ..."
+	(cd "$srcdir" && meson setup "$builddir" \
+		--prefix "$installdir" \
+		--libdir lib \
+		-Dbuildtype=release \
+		-Db_lto=false \
+		-Dstrip=true \
+		-Dplatforms=x11 \
+		-Dgallium-drivers= \
+		-Dvulkan-drivers=freedreno \
+		-Dfreedreno-kmds=kgsl \
+		-Dvulkan-beta=true \
+		-Dshader-cache=enabled \
+		-Dxmlconfig=disabled \
+		-Dopengl=false \
+		-Degl=disabled \
+		-Dgbm=disabled \
+		-Dglx=disabled \
+		-Dllvm=disabled \
+		-Dvideo-codecs=)
+
+	echo "Compiling ..."
+	ninja -C "$builddir" install
+
+	[ -f "$installdir/lib/libvulkan_freedreno.so" ] || die "build failed, libvulkan_freedreno.so not found"
+}
+
+package_tzst(){
+	local variant="$1" suffix="$2"
+	local lib="$installdir/lib/libvulkan_freedreno.so"
+	local pkg="$workdir/pkg-glibc-$variant"
+	local name="$ZIP_PREFIX-v$BUILD_VERSION$suffix-glibc.tzst"
+
+	rm -rf "$pkg"
+	mkdir -p "$pkg/usr/lib" "$pkg/usr/share/vulkan/icd.d"
+	cp "$lib" "$pkg/usr/lib/"
+
+	cat <<EOF >"$pkg/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+{
+    "ICD": {
+        "api_version": "$VULKAN_VERSION",
+        "library_arch": "64",
+        "library_path": "$GLIBC_ICD_LIBRARY_PATH"
+    },
+    "file_format_version": "1.0.1"
+}
+EOF
+
+	local extra path ldcache
+	ldcache="$(ldconfig -p)"
+	for extra in $GLIBC_EXTRA_LIBS; do
+		path="$(awk -v n="$extra" '$1 == n && /AArch64|aarch64/ && !found {print $NF; found=1}' <<< "$ldcache")"
+		[ -n "$path" ] || die "extra library $extra not found on the build host"
+		cp -L "$path" "$pkg/usr/lib/$extra"
+	done
+
+	# What the rootfs has to provide, for the release notes.
+	local needed glibc_req
+	needed="$(readelf -d "$lib" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+	glibc_req="$(objdump -T "$pkg"/usr/lib/*.so* | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -n1)"
+	cat <<EOF >"$OUT_DIR/glibc-info.env"
+GLIBC_REQUIRED=$glibc_req
+GLIBC_NEEDED=${needed% }
+GLIBC_EXTRA_LIBS=$GLIBC_EXTRA_LIBS
+GLIBC_BUILD_HOST=$(. /etc/os-release && echo "$PRETTY_NAME")
+GLIBC_ICD_LIBRARY_PATH=$GLIBC_ICD_LIBRARY_PATH
+EOF
+
+	echo "Packing $name ..."
+	tar -C "$pkg" --zstd -cf "$OUT_DIR/$name" ./usr
+	tar --zstd -tvf "$OUT_DIR/$name"
+	cat "$pkg/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+	echo "Needs: $needed"
+	echo "Needs glibc >= $glibc_req"
+	info "Created $OUT_DIR/$name"
 }
 
 run_all

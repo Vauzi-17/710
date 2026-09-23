@@ -34,24 +34,30 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Apply patches to Mesa ${{ env.MESA_REF }}
-      run: bash ./turnip_builder.sh
+    - name: Apply patches to Mesa ${{ env.MESA_REF }} (android)
+      run: OUT_DIR="$PWD/out/android" BUILD_TARGET=android bash ./turnip_builder.sh
+
+    # Same patches plus patches/glibc/.
+    - name: Apply patches to Mesa ${{ env.MESA_REF }} (glibc)
+      if: always()
+      run: OUT_DIR="$PWD/out/glibc" BUILD_TARGET=glibc bash ./turnip_builder.sh
 
     - name: Summary
       if: always()
       run: |
         {
           echo "### Patch check against Mesa ${MESA_REF}"
-          if [ -f out/build-info.env ]; then
-            grep -E '^(MESA_COMMIT|MESA_VERSION)=' out/build-info.env | sed 's/^/- /'
+          if [ -f out/android/build-info.env ]; then
+            grep -E '^(MESA_COMMIT|MESA_VERSION)=' out/android/build-info.env | sed 's/^/- /'
           fi
           echo
           found=0
-          for f in out/patches-*.txt; do
+          for f in out/*/patches-*.txt; do
             [ -s "$f" ] || continue
             found=1
+            target=$(basename "$(dirname "$f")")
             variant=$(basename "$f" .txt); variant=${variant#patches-}
-            echo "**${variant}**"
+            echo "**${target}: ${variant}**"
             echo
             echo "| Patch | Result |"
             echo "|---|---|"

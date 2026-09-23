@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: 'all'
+      glibc:
+        description: 'Also build the glibc (Winlator) .tzst'
+        required: false
+        type: boolean
+        default: true
       release:
         description: 'Publish a GitHub release (off = build and upload artifacts only)'
         required: false
@@ -42,30 +47,34 @@ concurrency:
   group: turnip-release
   cancel-in-progress: false
 
+env:
+  MESA_REPO: https://gitlab.freedesktop.org/mesa/mesa
+
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
+  prepare:
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      # Scheduled runs have no inputs, so every input falls back to its default.
-      MESA_REPO: https://gitlab.freedesktop.org/mesa/mesa
-      MESA_REF: ${{ inputs.mesa_ref || 'main' }}
-      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
-      DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
-      NDK_VERSION: android-ndk-r29
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1G
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      mesa_commit: ${{ steps.resolve.outputs.mesa_commit }}
+      skip: ${{ steps.resolve.outputs.skip }}
+      do_release: ${{ steps.resolve.outputs.do_release }}
+      glibc: ${{ steps.resolve.outputs.glibc }}
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Resolve version
+    - name: Resolve version and Mesa commit
+      id: resolve
       env:
         GH_TOKEN: ${{ github.token }}
         INPUT_VERSION: ${{ inputs.version }}
+        MESA_REF: ${{ inputs.mesa_ref || 'main' }}
+        # Scheduled runs have no inputs: release, and build glibc.
+        DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
+        GLIBC: ${{ github.event_name == 'schedule' || inputs.glibc }}
       run: |
         set -euo pipefail
         releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -89,12 +98,27 @@ jobs:
           fi
         fi
         echo "Previous release: ${latest:-none}, this build: ${version}"
-        echo "BUILD_VERSION=${version}" >> "$GITHUB_ENV"
 
         if [ "$DO_RELEASE" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
           echo "::error::Tag ${version} already exists. Pick another version or delete the old release first."
           exit 1
         fi
+
+        # Both build jobs use this exact commit, so the zip and the tzst
+        # always come from the same Mesa even if main moves during the run.
+        refs=$(git ls-remote "$MESA_REPO" "refs/heads/${MESA_REF}" "refs/tags/${MESA_REF}" "refs/tags/${MESA_REF}^{}")
+        # For an annotated tag, take the commit it points to (the ^{} line).
+        mesa_commit=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$refs")
+        [ -n "$mesa_commit" ] || mesa_commit=$(awk 'NR == 1 {print $1}' <<< "$refs")
+        if [ -z "$mesa_commit" ]; then
+          if [[ "$MESA_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            mesa_commit="$MESA_REF"
+          else
+            echo "::error::Mesa ref '${MESA_REF}' not found. Use a branch, a tag or a full 40-character commit hash."
+            exit 1
+          fi
+        fi
+        echo "Mesa ${MESA_REF}: ${mesa_commit}"
 
         # A scheduled build is skipped when neither Mesa nor this repo changed
         # since the previous release, so the same driver is not released twice.
@@ -102,18 +126,41 @@ jobs:
         if [ "${{ github.event_name }}" = "schedule" ] && [ -n "$latest" ]; then
           prev_mesa=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${latest}" --jq .body \
                         | grep -oE 'mesa/-/commit/[0-9a-f]{40}' | head -n1 | cut -d/ -f3 || true)
-          mesa_now=$(git ls-remote "$MESA_REPO" "refs/heads/${MESA_REF}" | cut -f1)
           repo_changes=$(git rev-list --count "refs/tags/${latest}..HEAD" 2>/dev/null || echo 1)
-          echo "Mesa: previous ${prev_mesa:-unknown}, now ${mesa_now}. Repo commits since ${latest}: ${repo_changes}"
-          if [ -n "$prev_mesa" ] && [ "$prev_mesa" = "$mesa_now" ] && [ "$repo_changes" = "0" ]; then
+          echo "Mesa: previous ${prev_mesa:-unknown}. Repo commits since ${latest}: ${repo_changes}"
+          if [ -n "$prev_mesa" ] && [ "$prev_mesa" = "$mesa_commit" ] && [ "$repo_changes" = "0" ]; then
             skip=true
             echo "Nothing changed since ${latest}, skipping this week's build." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
         fi
-        echo "SKIP=${skip}" >> "$GITHUB_ENV"
+
+        {
+          echo "version=${version}"
+          echo "mesa_commit=${mesa_commit}"
+          echo "skip=${skip}"
+          echo "do_release=${DO_RELEASE}"
+          echo "glibc=${GLIBC}"
+        } >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: android
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
+      NDK_VERSION: android-ndk-r29
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
 
     - name: Prepare environment
-      if: env.SKIP != 'true'
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
@@ -123,51 +170,132 @@ jobs:
         meson --version
 
     - name: Cache Android NDK
-      if: env.SKIP != 'true'
       uses: actions/cache@v4
       with:
         path: turnip_workdir/${{ env.NDK_VERSION }}
         key: ndk-${{ env.NDK_VERSION }}
 
     - name: Cache ccache
-      if: env.SKIP != 'true'
       uses: actions/cache@v4
       with:
         path: .ccache
-        key: ccache-${{ github.run_id }}
-        restore-keys: ccache-
+        key: ccache-android-${{ github.run_id }}
+        restore-keys: ccache-android-
 
     - name: Execute build script
-      if: env.SKIP != 'true'
-      run: bash ./turnip_builder.sh 2>&1 | tee build.log
+      run: bash ./turnip_builder.sh 2>&1 | tee build-android.log
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-android
+        path: |
+          out/
+          build-android.log
+        if-no-files-found: error
+
+  glibc:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.glibc == 'true'
+    # Native arm64 build. Override with the GLIBC_RUNNER repository variable if needed.
+    runs-on: ${{ vars.GLIBC_RUNNER || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: glibc
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache pkg-config python3-pip \
+          zstd binutils libdrm-dev zlib1g-dev libexpat1-dev \
+          libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxxf86vm-dev libxshmfence-dev \
+          libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev \
+          libxcb-randr0-dev libxcb-shm0-dev libxcb-keysyms1-dev
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-glibc-${{ github.run_id }}
+        restore-keys: ccache-glibc-
+
+    - name: Execute build script
+      run: |
+        # meson picks up ccache by itself when it is installed.
+        bash ./turnip_builder.sh 2>&1 | tee build-glibc.log
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-glibc
+        path: |
+          out/
+          build-glibc.log
+        if-no-files-found: error
+
+  release:
+    needs: [prepare, android, glibc]
+    # Runs when android succeeded and glibc either succeeded or was not requested.
+    if: >-
+      always() &&
+      needs.prepare.outputs.skip != 'true' &&
+      needs.android.result == 'success' &&
+      (needs.glibc.result == 'success' || needs.glibc.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download build output
+      uses: actions/download-artifact@v4
+      with:
+        pattern: turnip-*
+        merge-multiple: true
 
     - name: Generate release notes
-      if: env.SKIP != 'true'
       env:
         GH_TOKEN: ${{ github.token }}
         CHANGES: ${{ inputs.changes }}
       run: |
+        ls -l out/
         python3 release_notes.py > RELEASE_NOTES.md
+        # Only the packages go into the release.
+        mkdir -p release
+        cp out/*.zip release/
+        cp out/*.tzst release/ 2>/dev/null || true
+        ls -l release/
         cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Upload build output
-      if: env.SKIP != 'true'
+    - name: Upload release notes
       uses: actions/upload-artifact@v4
       with:
-        name: turnip-v${{ env.BUILD_VERSION }}
-        path: |
-          out/
-          RELEASE_NOTES.md
-          build.log
-        if-no-files-found: error
+        name: release-notes-v${{ env.BUILD_VERSION }}
+        path: RELEASE_NOTES.md
 
     - name: Release "turnip"
-      if: env.SKIP != 'true' && env.DO_RELEASE == 'true'
+      if: needs.prepare.outputs.do_release == 'true'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.BUILD_VERSION }}
         name: Turnip Adreno 710,720,722 v${{ env.BUILD_VERSION }}
         body_path: RELEASE_NOTES.md
         draft: ${{ inputs.draft || false }}
-        files: out/*.zip
+        files: release/*
         fail_on_unmatched_files: true

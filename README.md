@@ -49,7 +49,8 @@ Builds come from upstream Mesa `main` ([gitlab.freedesktop.org/mesa/mesa](https:
 - **GitHub Actions**: run the *Build "turnip"* workflow. Leave the version empty to use the previous release + 1 (3.8 → 3.9, 3.9 → 4.0), or type one yourself. The workflow creates the release, generates the notes, and attaches `Turnip-710-720-722-v<version>.zip`, plus one extra zip for each folder under `patches/variants/`.
 - **Weekly build**: the same workflow runs every Sunday at 00:00 UTC with an automatic version. It is skipped when neither Mesa `main` nor this repo changed since the previous release.
 - **Patch check**: every push that touches `patches/` runs the *Check patches* workflow. It applies the patches to the current Mesa `main` without compiling, so a patch that no longer fits upstream shows up in a few minutes.
-- **Locally**: `BUILD_VERSION=3.9 bash turnip_builder.sh`. Output goes to `out/`.
+- **glibc build**: the workflow also builds `Turnip-710-720-722-v<version>-glibc.tzst` on a native arm64 runner. This is a Linux glibc build with X11 presentation for Winlator; extract it into the rootfs. Turn it off with the `glibc` input. If `ubuntu-24.04-arm` is not available to the repository, set the repository variable `GLIBC_RUNNER` to another arm64 runner label.
+- **Locally**: `BUILD_VERSION=3.9 bash turnip_builder.sh`. Output goes to `out/`. The glibc build needs an arm64 Linux machine: `BUILD_VERSION=3.9 BUILD_TARGET=glibc bash turnip_builder.sh`.
 - **Check patches only** (no NDK, no compile): `BUILD_VERSION=test PATCH_ONLY=1 bash turnip_builder.sh`.
 
 For a longer "Changes" section, put the text in `release_notes/v<version>.md` before running the workflow.

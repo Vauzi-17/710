@@ -51,10 +51,23 @@ patches/
 
 Result: `Turnip-710-720-722-vX.zip` and `Turnip-710-720-722-vX-lf.zip`.
 
+## glibc-only patches
+
+Files in `glibc/` are applied only to the glibc (Winlator) build, after the
+common and variant patches. Use it for changes that make no sense on Android,
+such as X11 presentation (WSI) changes:
+
+```
+patches/
+  glibc/
+    01-wsi-something.patch       -> only in the .tzst files
+```
+
 ## Checking patches without a full build
 
 ```
 BUILD_VERSION=test PATCH_ONLY=1 bash turnip_builder.sh
+BUILD_VERSION=test PATCH_ONLY=1 BUILD_TARGET=glibc bash turnip_builder.sh   # includes glibc/
 ```
 
 This clones Mesa and applies everything, then stops before downloading the
