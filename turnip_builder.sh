@@ -429,7 +429,9 @@ compile_glibc(){
 	# Keep runtime dependencies to what a Winlator rootfs is likely to have:
 	# zstd off (the shader cache falls back to zlib), and no xcb-keysyms,
 	# which the X11 WSI only uses for a trace hotkey (the workflow does not
-	# install its headers).
+	# install its headers). libstdc++ is linked statically, so the driver
+	# does not depend on the rootfs having a libstdc++ as new as the build
+	# host's.
 	echo "Configuring (glibc, X11) ..."
 	(cd "$srcdir" && meson setup "$builddir" \
 		--prefix "$installdir" \
@@ -450,6 +452,7 @@ compile_glibc(){
 		-Dglx=disabled \
 		-Dllvm=disabled \
 		-Dzstd=disabled \
+		-Dcpp_link_args=-static-libstdc++ \
 		-Dvideo-codecs=)
 
 	echo "Compiling ..."
@@ -488,11 +491,13 @@ EOF
 	done
 
 	# What the rootfs has to provide, for the release notes.
-	local needed glibc_req
+	local needed glibc_req glibcxx_req
 	needed="$(readelf -d "$lib" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
 	glibc_req="$(objdump -T "$pkg"/usr/lib/*.so* | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -n1)"
+	glibcxx_req="$(objdump -T "$lib" | grep -oE 'GLIBCXX_[0-9]+(\.[0-9]+)+' | sed 's/GLIBCXX_//' | sort -Vu | tail -n1 || true)"
 	cat <<EOF >"$OUT_DIR/glibc-info.env"
 GLIBC_REQUIRED=$glibc_req
+GLIBCXX_REQUIRED=$glibcxx_req
 GLIBC_NEEDED=${needed% }
 GLIBC_EXTRA_LIBS=$GLIBC_EXTRA_LIBS
 GLIBC_BUILD_HOST=$(. /etc/os-release && echo "$PRETTY_NAME")
@@ -505,6 +510,7 @@ EOF
 	cat "$pkg/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json"
 	echo "Needs: $needed"
 	echo "Needs glibc >= $glibc_req"
+	echo "Needs libstdc++ GLIBCXX >= ${glibcxx_req:-none (not linked dynamically)}"
 	info "Created $OUT_DIR/$name"
 }
 
