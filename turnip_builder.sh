@@ -426,6 +426,10 @@ compile_glibc(){
 	installdir="$workdir/install-glibc-$variant"
 	rm -rf "$builddir" "$installdir"
 
+	# Keep runtime dependencies to what a Winlator rootfs is likely to have:
+	# zstd off (the shader cache falls back to zlib), and no xcb-keysyms,
+	# which the X11 WSI only uses for a trace hotkey (the workflow does not
+	# install its headers).
 	echo "Configuring (glibc, X11) ..."
 	(cd "$srcdir" && meson setup "$builddir" \
 		--prefix "$installdir" \
@@ -445,6 +449,7 @@ compile_glibc(){
 		-Dgbm=disabled \
 		-Dglx=disabled \
 		-Dllvm=disabled \
+		-Dzstd=disabled \
 		-Dvideo-codecs=)
 
 	echo "Compiling ..."

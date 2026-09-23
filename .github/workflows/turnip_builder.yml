@@ -221,7 +221,7 @@ jobs:
           zstd binutils libdrm-dev zlib1g-dev libexpat1-dev \
           libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxxf86vm-dev libxshmfence-dev \
           libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev \
-          libxcb-randr0-dev libxcb-shm0-dev libxcb-keysyms1-dev
+          libxcb-randr0-dev libxcb-shm0-dev
         sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
         meson --version
 
