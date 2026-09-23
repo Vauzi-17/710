@@ -29,6 +29,8 @@
 #                     (default: /data/data/com.winlator/files/rootfs/lib/libvulkan_freedreno.so)
 #   GLIBC_EXTRA_LIBS  Host libraries copied into the .tzst next to the driver
 #                     (default: libxcb-xfixes.so.0, set to "" for none)
+#   GLIBC_ROOTFS_LIBS Libraries the target rootfs provides; the build fails if
+#                     the driver needs one that is in neither list
 #
 # Patch folder layout (see patches/README.md):
 #   patches/*.patch|*.diff|*.py|*.sh   applied to every build, in name order
@@ -59,6 +61,11 @@ PATCH_ONLY="${PATCH_ONLY:-0}"
 BUILD_TARGET="${BUILD_TARGET:-android}"
 GLIBC_ICD_LIBRARY_PATH="${GLIBC_ICD_LIBRARY_PATH:-/data/data/com.winlator/files/rootfs/lib/libvulkan_freedreno.so}"
 GLIBC_EXTRA_LIBS="${GLIBC_EXTRA_LIBS-libxcb-xfixes.so.0}"
+# Libraries the Winlator rootfs is known to provide: the NEEDED list of the
+# official Winlator Turnip packages (24.1.0, 25.0.0, 26.0.3). The glibc build
+# fails if the driver needs anything outside this list and GLIBC_EXTRA_LIBS,
+# because such a driver does not load (VK_ERROR_INCOMPATIBLE_DRIVER).
+GLIBC_ROOTFS_LIBS="${GLIBC_ROOTFS_LIBS-libz.so.1 libdrm.so.2 libxcb.so.1 libX11-xcb.so.1 libxcb-dri3.so.0 libxcb-present.so.0 libxcb-randr.so.0 libxcb-shm.so.0 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6 ld-linux-aarch64.so.1}"
 
 # The API level the NDK compiler targets, and the one Mesa is configured for.
 sdkver="34"
@@ -495,6 +502,15 @@ EOF
 	needed="$(readelf -d "$lib" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
 	glibc_req="$(objdump -T "$pkg"/usr/lib/*.so* | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -n1)"
 	glibcxx_req="$(objdump -T "$lib" | grep -oE 'GLIBCXX_[0-9]+(\.[0-9]+)+' | sed 's/GLIBCXX_//' | sort -Vu | tail -n1 || true)"
+	local dep missing=""
+	for dep in $needed; do
+		case " $GLIBC_ROOTFS_LIBS $GLIBC_EXTRA_LIBS " in
+		*" $dep "*) ;;
+		*) missing="$missing $dep" ;;
+		esac
+	done
+	[ -z "$missing" ] || die "the glibc driver needs$missing, which the Winlator rootfs does not provide and the .tzst does not include. Remove the dependency or add it to GLIBC_EXTRA_LIBS."
+
 	cat <<EOF >"$OUT_DIR/glibc-info.env"
 GLIBC_REQUIRED=$glibc_req
 GLIBCXX_REQUIRED=$glibcxx_req
