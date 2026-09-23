@@ -4,60 +4,113 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build'
+        description: 'Release version, e.g. 3.9 (also the tag name)'
         required: true
         type: string
+      changes:
+        description: 'Changes for the release notes, separated by ";" (optional)'
+        required: false
+        type: string
+        default: ''
+      mesa_ref:
+        description: 'Mesa branch, tag or commit'
+        required: false
+        type: string
+        default: 'main'
+      variants:
+        description: '"all" = standard build + every patches/variants/* folder, or e.g. "base" / "base lf"'
+        required: false
+        type: string
+        default: 'all'
+      release:
+        description: 'Publish a GitHub release (off = build and upload artifacts only)'
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: 'Create the release as a draft'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: turnip-build-${{ inputs.version }}
 
 jobs:
-  start_building_turnip:
+  build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
     env:
       BUILD_VERSION: ${{ inputs.version }}
+      MESA_REF: ${{ inputs.mesa_ref }}
+      BUILD_VARIANTS: ${{ inputs.variants }}
+      NDK_VERSION: android-ndk-r29
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
+    # Fail in seconds instead of after a full build.
+    - name: Check that the tag is free
+      if: inputs.release
+      run: |
+        if git ls-remote --exit-code --tags origin "refs/tags/${BUILD_VERSION}" >/dev/null; then
+          echo "::error::Tag ${BUILD_VERSION} already exists. Pick another version or delete the old release first."
+          exit 1
+        fi
 
     - name: Prepare environment
       run: |
-        sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-        sudo apt update
-        sudo apt install build-essential flex bison glslang-tools
-        sudo apt install meson-1.5 
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache zip unzip pkg-config python3-pip
+        # Mesa main needs a newer meson than Ubuntu 24.04 ships.
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: turnip_workdir/${{ env.NDK_VERSION }}
+        key: ndk-${{ env.NDK_VERSION }}
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-${{ github.run_id }}
+        restore-keys: ccache-
 
     - name: Execute build script
-      run: bash ./turnip_builder.sh
+      run: bash ./turnip_builder.sh 2>&1 | tee build.log
+
+    - name: Generate release notes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CHANGES: ${{ inputs.changes }}
+      run: |
+        python3 release_notes.py > RELEASE_NOTES.md
+        cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload build output
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-v${{ inputs.version }}
+        path: |
+          out/
+          RELEASE_NOTES.md
+          build.log
+        if-no-files-found: error
 
     - name: Release "turnip"
-      uses: softprops/action-gh-release@v1
+      if: inputs.release
+      uses: softprops/action-gh-release@v2
       with:
-        body: |
-          A8XX Turnip Vulkan V${{ inputs.version }}  
-          Built from: https://github.com/whitebelyash/mesa-tu8
-          
-          >[!WARNING]
-          > This release is still Beta, especially for devices other than Adreno 840. PLEASE, don't report any issues to Mesa
-          > Original merge request is Draft again, so it's not ready
-                    
-          Supports following GPUs:
-          - Adreno 810 (tested, working, less stable than all other GPUs) - sysmem only
-          - Adreno 825 (tested, working with minor glitches compared to A830) - GMEM/sysmem
-          - Adreno 830 (tested, working) - sysmem-only - gmem causes GPU hangs
-          - Adreno 840 (tested, working) - GMEM/sysmem
-          Following GPUs were added but no proper testing was done:
-          - Adreno 829 (no testers were found)
-          
-          GPUs other than 830/840 can have reduced performance and/or more glitches. Can't do anything about that, sorry!  
-          Adreno 810 is additionally very slow, I'm not sure if you even want to use Turnip there
-          
-          Files:
-          * gen8 - main branch (upstream MR + hacks applied)
-          
-          Notes:
-          * Disable DXVK_HUD if you see weird black artifacts
-          * Apparently there are swizzling glitches in Eden & maybe other emulators, try increasing render scale(?)
-          * Some games may require AMD/NVIDIA GPU to run and refuse to start on Qualcomm or block some features. I've included a patch to spoof as Steam Deck - use `TU_DEBUG=deck_emu`
-          * If too unstable - activate nolrz: `TU_DEBUG=nolrz`.
-
-        tag_name: tu_v${{ inputs.version }}
-        name: Turnip A8XX v${{ inputs.version }}
-        files: |
-           /tmp/a8xx-gen8-V${{ inputs.version }}.zip
+        tag_name: ${{ inputs.version }}
+        name: Turnip Adreno 710,720,722 v${{ inputs.version }}
+        body_path: RELEASE_NOTES.md
+        draft: ${{ inputs.draft }}
+        files: out/*.zip
+        fail_on_unmatched_files: true

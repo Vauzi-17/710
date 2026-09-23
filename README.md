@@ -42,6 +42,16 @@ Adreno GPU model numbers are shared across multiple Snapdragon chipset tiers, ea
 
 Note: in our testing, Mesa 24.3.4 tends to run lower FPS than Mesa 26.x on the same workloads. Try 26.x first unless you have a specific compatibility reason to use the legacy branch.
 
+## Building
+
+Builds come from upstream Mesa `main` ([gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa)), plus whatever is in [`patches/`](patches/README.md). An empty `patches/` folder means a plain upstream build.
+
+- **GitHub Actions**: run the *Build "turnip"* workflow with a version such as `3.9`. The workflow creates the release, generates the notes, and attaches `Turnip-710-720-722-v<version>.zip`, plus one extra zip for each folder under `patches/variants/`.
+- **Locally**: `BUILD_VERSION=3.9 bash turnip_builder.sh`. Output goes to `out/`.
+- **Check patches only** (no NDK, no compile): `BUILD_VERSION=test PATCH_ONLY=1 bash turnip_builder.sh`.
+
+For a longer "Changes" section, put the text in `release_notes/v<version>.md` before running the workflow.
+
 ## Support
 
 Questions or issues: **[t.me/vauzi_17](https://t.me/vauzi_17)**
