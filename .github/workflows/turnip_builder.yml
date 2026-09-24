@@ -27,10 +27,10 @@ on:
         type: string
         default: 'all'
       glibc:
-        description: 'Also build the glibc (Winlator) .tzst'
+        description: 'Also build the experimental glibc (Winlator) .tzst'
         required: false
         type: boolean
-        default: true
+        default: false
       release:
         description: 'Publish a GitHub release (off = build and upload artifacts only)'
         required: false
@@ -72,9 +72,9 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         INPUT_VERSION: ${{ inputs.version }}
         MESA_REF: ${{ inputs.mesa_ref || 'main' }}
-        # Scheduled runs have no inputs: release, and build glibc.
+        # Scheduled runs have no inputs: release the Android build only.
         DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
-        GLIBC: ${{ github.event_name == 'schedule' || inputs.glibc }}
+        GLIBC: ${{ github.event_name != 'schedule' && inputs.glibc }}
       run: |
         set -euo pipefail
         releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
