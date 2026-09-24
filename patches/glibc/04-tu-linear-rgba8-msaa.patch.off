@@ -1,0 +1,24 @@
+From: BrunoSX <brunodeveloper85@gmail.com>
+Subject: [PATCH] tu: report 8x MSAA for linear RGBA8 transfer/sample/render images
+
+Ported from brunodev85/mesa3d-custom. Its purpose is not documented; it
+is kept so the driver answers this format query the same way as the
+official Winlator Turnip builds. Rename to .off to drop it.
+---
+diff --git a/src/freedreno/vulkan/tu_formats.cc b/src/freedreno/vulkan/tu_formats.cc
+index 45c2b0d..bc1f53a 100644
+--- a/src/freedreno/vulkan/tu_formats.cc
++++ b/src/freedreno/vulkan/tu_formats.cc
+@@ -654,6 +654,12 @@ tu_get_image_format_properties(
+       if (physical_device->info->chip >= A7XX &&
+           vk_format_get_blocksizebits(info->format) <= 64)
+          sampleCounts |= VK_SAMPLE_COUNT_8_BIT;
++   } else if (info->tiling == VK_IMAGE_TILING_LINEAR &&
++              info->type == VK_IMAGE_TYPE_2D &&
++              info->format == VK_FORMAT_R8G8B8A8_UNORM &&
++              info->usage == (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
++                              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
++      sampleCounts = VK_SAMPLE_COUNT_8_BIT;
+    }
+ 
+    /* From the Vulkan 1.3.206 spec:

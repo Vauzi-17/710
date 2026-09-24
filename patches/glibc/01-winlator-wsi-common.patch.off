@@ -1,0 +1,341 @@
+From: BrunoSX <brunodeveloper85@gmail.com>
+Subject: [PATCH] wsi: Winlator hardware-buffer presentation support
+
+Ported from brunodev85/mesa3d-custom (turnip-26.1.0-devel) to current
+Mesa main:
+- wsi_common_drm.c: import the window's hardware buffer (hwbuf_fd) as the
+  swapchain image memory instead of allocating and exporting a dma-buf,
+  and skip dma-buf sync-file import/export, which Winlator does not have.
+- wsi_common.c: MESA_VK_WSI_FORCE_WAIT_FOR_FENCES=1 waits for the
+  rendering fence before presenting, and wsi_init_pthread_cond_monotonic()
+  is added for the Winlator X11 WSI.
+- wsi_common_private.h: hwbuf_fd in wsi_image_info.
+
+Used together with 02-winlator-x11-wsi.py.
+---
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+index 7ba1bbc..5426ce5 100644
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -44,6 +44,7 @@
+ #include <time.h>
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <bits/pthreadtypes.h>
+ 
+ #ifndef _WIN32
+ #include <unistd.h>
+@@ -61,6 +62,31 @@ static const struct debug_control debug_control[] = {
+    { NULL, },
+ };
+ 
++#if defined(HAVE_PTHREAD) && !defined(_WIN32)
++bool
++wsi_init_pthread_cond_monotonic(pthread_cond_t* cond){
++   pthread_condattr_t condattr;
++   bool ret = false;
++
++   if(pthread_condattr_init(&condattr) != 0)
++      goto fail_attr_init;
++
++   if (pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC) != 0)
++      goto fail_attr_set;
++
++   if (pthread_cond_init(cond, &condattr) != 0)
++      goto fail_cond_init;
++
++   ret = true;
++
++   fail_cond_init:
++   fail_attr_set:
++      pthread_condattr_destroy(&condattr);
++   fail_attr_init:
++      return ret;
++}
++#endif
++
+ static bool present_false(VkPhysicalDevice pdevice, int fd) {
+    return false;
+ }
+@@ -75,6 +101,7 @@ wsi_device_init(struct wsi_device *wsi,
+                 const struct wsi_device_options *device_options)
+ {
+    const char *present_mode;
++   const char *force_wait_for_fences;
+    UNUSED VkResult result;
+ 
+    WSI_DEBUG = parse_debug_string(os_get_option("MESA_VK_WSI_DEBUG"), debug_control);
+@@ -87,6 +114,10 @@ wsi_device_init(struct wsi_device *wsi,
+    wsi->pdevice = pdevice;
+    wsi->supports_scanout = true;
+    wsi->sw = device_options->sw_device || (WSI_DEBUG & WSI_DEBUG_SW);
++
++   force_wait_for_fences = getenv("MESA_VK_WSI_FORCE_WAIT_FOR_FENCES");
++   wsi->force_wait_for_fences = force_wait_for_fences && (!strcmp(force_wait_for_fences, "true") || !strcmp(force_wait_for_fences, "1"));
++
+    wsi->wants_linear = (WSI_DEBUG & WSI_DEBUG_LINEAR) != 0;
+    wsi->x11.extra_xwayland_image = device_options->extra_xwayland_image;
+    wsi->wayland.disable_timestamps = (WSI_DEBUG & WSI_DEBUG_NOWLTS) != 0;
+@@ -2879,7 +2910,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
+ #endif
+       }
+ 
+-      if (wsi->sw) {
++      if (wsi->sw || wsi->force_wait_for_fences) {
+          wsi->WaitForFences(vk_device_to_handle(dev),
+                             1, &swapchain->fences[image_index], true, ~0ull);
+       }
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index cfb921d..980ca6b 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -165,6 +165,8 @@ struct wsi_device {
+ 
+    bool sw;
+ 
++   bool force_wait_for_fences;
++
+    /* Set to true if the implementation is ok with linear WSI images. */
+    bool wants_linear;
+ 
+@@ -269,6 +271,9 @@ struct wsi_device_options {
+    bool emulate_24as32;
+ };
+ 
++bool
++wsi_init_pthread_cond_monotonic(pthread_cond_t* cond);
++
+ VkResult
+ wsi_device_init(struct wsi_device *wsi,
+                 VkPhysicalDevice pdevice,
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index dbf65b2..0b4f2d0 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -43,10 +43,16 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <xf86drm.h>
++#include <sys/mman.h>
++
++#define NO_DMA_BUF_SYNC_FILE 1
+ 
+ static VkResult
+ wsi_dma_buf_export_sync_file(int dma_buf_fd, int *sync_file_fd)
+ {
++#ifdef NO_DMA_BUF_SYNC_FILE
++   return VK_ERROR_FEATURE_NOT_PRESENT;
++#else
+    struct dma_buf_export_sync_file export = {
+       .flags = DMA_BUF_SYNC_RW,
+       .fd = -1,
+@@ -64,11 +70,15 @@ wsi_dma_buf_export_sync_file(int dma_buf_fd, int *sync_file_fd)
+    *sync_file_fd = export.fd;
+ 
+    return VK_SUCCESS;
++#endif
+ }
+ 
+ static VkResult
+ wsi_dma_buf_import_sync_file(int dma_buf_fd, int sync_file_fd)
+ {
++#ifdef NO_DMA_BUF_SYNC_FILE
++   return VK_ERROR_FEATURE_NOT_PRESENT;
++#else
+    struct dma_buf_import_sync_file import = {
+       .flags = DMA_BUF_SYNC_RW,
+       .fd = sync_file_fd,
+@@ -84,6 +94,7 @@ wsi_dma_buf_import_sync_file(int dma_buf_fd, int sync_file_fd)
+    }
+ 
+    return VK_SUCCESS;
++#endif
+ }
+ 
+ /**
+@@ -767,73 +778,119 @@ wsi_create_native_image_mem(const struct wsi_swapchain *chain,
+    VkMemoryRequirements reqs;
+    wsi->GetImageMemoryRequirements(chain->device, image->image, &reqs);
+ 
+-   const struct wsi_memory_allocate_info memory_wsi_info = {
+-      .sType = VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,
+-      .pNext = NULL,
+-      /* Ask for the driver to add implicit sync to the image if we're not
+-       * handling implict sync ourselves.
+-       */
+-      .implicit_sync = !info->explicit_sync && !chain->dma_buf_semaphore,
+-      .dma_buf_sync_file = chain->dma_buf_semaphore,
+-   };
+-   const VkExportMemoryAllocateInfo memory_export_info = {
+-      .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+-      .pNext = &memory_wsi_info,
+-      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+-   };
+-   const VkMemoryDedicatedAllocateInfo memory_dedicated_info = {
+-      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+-      .pNext = &memory_export_info,
+-      .image = image->image,
+-      .buffer = VK_NULL_HANDLE,
+-   };
+-   const VkMemoryAllocateInfo memory_info = {
+-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+-      .pNext = &memory_dedicated_info,
+-      .allocationSize = reqs.size,
+-      .memoryTypeIndex =
+-         wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
+-   };
+-   result = wsi->AllocateMemory(chain->device, &memory_info,
+-                                &chain->alloc, &image->memory);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+-   result = wsi_init_image_dmabuf_fd(chain, image, false);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+-   if (info->drm_mod_list.drmFormatModifierCount > 0) {
+-      VkImageDrmFormatModifierPropertiesEXT image_mod_props = {
+-         .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
++   if (info->hwbuf_fd <= 0) {
++      const struct wsi_memory_allocate_info memory_wsi_info = {
++         .sType = VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,
++         .pNext = NULL,
++         /* Ask for the driver to add implicit sync to the image if we're not
++          * handling implict sync ourselves.
++          */
++         .implicit_sync = !info->explicit_sync && !chain->dma_buf_semaphore,
++         .dma_buf_sync_file = chain->dma_buf_semaphore,
++      };
++      const VkExportMemoryAllocateInfo memory_export_info = {
++         .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
++         .pNext = &memory_wsi_info,
++         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++      };
++      const VkMemoryDedicatedAllocateInfo memory_dedicated_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++         .pNext = &memory_export_info,
++         .image = image->image,
++         .buffer = VK_NULL_HANDLE,
+       };
+-      result = wsi->GetImageDrmFormatModifierPropertiesEXT(chain->device,
+-                                                           image->image,
+-                                                           &image_mod_props);
++      const VkMemoryAllocateInfo memory_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++         .pNext = &memory_dedicated_info,
++         .allocationSize = reqs.size,
++         .memoryTypeIndex =
++            wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
++      };
++      result = wsi->AllocateMemory(chain->device, &memory_info,
++                                   &chain->alloc, &image->memory);
+       if (result != VK_SUCCESS)
+          return result;
+ 
+-      image->drm_modifier = image_mod_props.drmFormatModifier;
+-      assert(image->drm_modifier != DRM_FORMAT_MOD_INVALID);
+-
+-      const struct VkDrmFormatModifierPropertiesEXT *mod_props =
+-         get_modifier_props(info, image->drm_modifier);
+-      image->num_planes = mod_props->drmFormatModifierPlaneCount;
++      result = wsi_init_image_dmabuf_fd(chain, image, false);
++      if (result != VK_SUCCESS)
++         return result;
+ 
+-      for (uint32_t p = 0; p < image->num_planes; p++) {
++      if (info->drm_mod_list.drmFormatModifierCount > 0) {
++         VkImageDrmFormatModifierPropertiesEXT image_mod_props = {
++            .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
++         };
++         result = wsi->GetImageDrmFormatModifierPropertiesEXT(chain->device,
++                                                              image->image,
++                                                              &image_mod_props);
++         if (result != VK_SUCCESS)
++            return result;
++
++         image->drm_modifier = image_mod_props.drmFormatModifier;
++         assert(image->drm_modifier != DRM_FORMAT_MOD_INVALID);
++
++         const struct VkDrmFormatModifierPropertiesEXT *mod_props =
++            get_modifier_props(info, image->drm_modifier);
++         image->num_planes = mod_props->drmFormatModifierPlaneCount;
++
++         for (uint32_t p = 0; p < image->num_planes; p++) {
++            const VkImageSubresource image_subresource = {
++               .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT << p,
++               .mipLevel = 0,
++               .arrayLayer = 0,
++            };
++            VkSubresourceLayout image_layout;
++            wsi->GetImageSubresourceLayout(chain->device, image->image,
++                                           &image_subresource, &image_layout);
++            image->sizes[p] = image_layout.size;
++            image->row_pitches[p] = image_layout.rowPitch;
++            image->offsets[p] = image_layout.offset;
++         }
++      } else {
+          const VkImageSubresource image_subresource = {
+-            .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT << p,
++            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+             .mipLevel = 0,
+             .arrayLayer = 0,
+          };
+          VkSubresourceLayout image_layout;
+          wsi->GetImageSubresourceLayout(chain->device, image->image,
+                                         &image_subresource, &image_layout);
+-         image->sizes[p] = image_layout.size;
+-         image->row_pitches[p] = image_layout.rowPitch;
+-         image->offsets[p] = image_layout.offset;
++
++         image->drm_modifier = DRM_FORMAT_MOD_INVALID;
++         image->num_planes = 1;
++         image->sizes[0] = reqs.size;
++         image->row_pitches[0] = image_layout.rowPitch;
++         image->offsets[0] = 0;
+       }
+    } else {
++      const struct wsi_memory_allocate_info memory_wsi_info = {
++         .sType = VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,
++         .pNext = NULL,
++         .implicit_sync = true,
++      };
++      const VkImportMemoryFdInfoKHR memory_import_info = {
++         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++         .pNext = &memory_wsi_info,
++         .fd = os_dupfd_cloexec(info->hwbuf_fd),
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
++      };
++      const VkMemoryDedicatedAllocateInfo memory_dedicated_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++         .pNext = &memory_import_info,
++         .image = image->image,
++         .buffer = VK_NULL_HANDLE,
++      };
++      const VkMemoryAllocateInfo memory_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++         .pNext = &memory_dedicated_info,
++         .allocationSize = reqs.size,
++         .memoryTypeIndex =
++             wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
++      };
++      result = wsi->AllocateMemory(chain->device, &memory_info,
++                                   &chain->alloc, &image->memory);
++      if (result != VK_SUCCESS)
++         return result;
++
+       const VkImageSubresource image_subresource = {
+          .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+          .mipLevel = 0,
+diff --git a/src/vulkan/wsi/wsi_common_private.h b/src/vulkan/wsi/wsi_common_private.h
+index 3d2cd7d..8c1b2d2 100644
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -108,6 +108,8 @@ struct wsi_image_info {
+ 
+    bool prime_use_linear_modifier;
+ 
++   int hwbuf_fd;
++
+    /* Not really part of VkImageCreateInfo but needed to figure out the
+     * number of planes we need to bind.
+     */

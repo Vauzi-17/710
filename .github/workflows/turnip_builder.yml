@@ -1,63 +1,301 @@
 name: Build "turnip"
 
 on:
+  schedule:
+    # Every Sunday 00:00 UTC (07:00 WIB).
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build'
-        required: true
+        description: 'Release version, e.g. 3.9. Empty = previous release + 1 (3.8 -> 3.9, 3.9 -> 4.0)'
+        required: false
         type: string
+        default: ''
+      changes:
+        description: 'Changes for the release notes, separated by ";" (optional)'
+        required: false
+        type: string
+        default: ''
+      mesa_ref:
+        description: 'Mesa branch, tag or commit'
+        required: false
+        type: string
+        default: 'main'
+      variants:
+        description: '"all" = standard build + every patches/variants/* folder, or e.g. "base" / "base lf"'
+        required: false
+        type: string
+        default: 'all'
+      glibc:
+        description: 'Also build the experimental glibc (Winlator) .tzst'
+        required: false
+        type: boolean
+        default: false
+      release:
+        description: 'Publish a GitHub release (off = build and upload artifacts only)'
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: 'Create the release as a draft'
+        required: false
+        type: boolean
+        default: false
+
+# One release build at a time, so two runs can never pick the same version.
+concurrency:
+  group: turnip-release
+  cancel-in-progress: false
+
+env:
+  MESA_REPO: https://gitlab.freedesktop.org/mesa/mesa
 
 jobs:
-  start_building_turnip:
-    runs-on: ubuntu-24.04
-    env:
-      BUILD_VERSION: ${{ inputs.version }}
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      mesa_commit: ${{ steps.resolve.outputs.mesa_commit }}
+      skip: ${{ steps.resolve.outputs.skip }}
+      do_release: ${{ steps.resolve.outputs.do_release }}
+      glibc: ${{ steps.resolve.outputs.glibc }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Resolve version and Mesa commit
+      id: resolve
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        MESA_REF: ${{ inputs.mesa_ref || 'main' }}
+        # Scheduled runs have no inputs: release the Android build only.
+        DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
+        GLIBC: ${{ github.event_name != 'schedule' && inputs.glibc }}
+      run: |
+        set -euo pipefail
+        releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                     --jq '.[] | select(.draft == false) | .tag_name')
+        # Only plain version tags (3.8, 2.6.3); older tags like tu_v1.8 or m25_* are skipped.
+        latest=$(echo "$releases" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1 || true)
+
+        if [ -n "$INPUT_VERSION" ]; then
+          version="$INPUT_VERSION"
+        elif [ -z "$latest" ]; then
+          echo "::error::No previous release found, run the workflow once with a version."
+          exit 1
+        else
+          major=${latest%%.*}
+          rest=${latest#*.}
+          minor=${rest%%.*}
+          if [ "$minor" -ge 9 ]; then
+            version="$((major + 1)).0"
+          else
+            version="${major}.$((minor + 1))"
+          fi
+        fi
+        echo "Previous release: ${latest:-none}, this build: ${version}"
+
+        if [ "$DO_RELEASE" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
+          echo "::error::Tag ${version} already exists. Pick another version or delete the old release first."
+          exit 1
+        fi
+
+        # Both build jobs use this exact commit, so the zip and the tzst
+        # always come from the same Mesa even if main moves during the run.
+        refs=$(git ls-remote "$MESA_REPO" "refs/heads/${MESA_REF}" "refs/tags/${MESA_REF}" "refs/tags/${MESA_REF}^{}")
+        # For an annotated tag, take the commit it points to (the ^{} line).
+        mesa_commit=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$refs")
+        [ -n "$mesa_commit" ] || mesa_commit=$(awk 'NR == 1 {print $1}' <<< "$refs")
+        if [ -z "$mesa_commit" ]; then
+          if [[ "$MESA_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            mesa_commit="$MESA_REF"
+          else
+            echo "::error::Mesa ref '${MESA_REF}' not found. Use a branch, a tag or a full 40-character commit hash."
+            exit 1
+          fi
+        fi
+        echo "Mesa ${MESA_REF}: ${mesa_commit}"
+
+        # A scheduled build is skipped when neither Mesa nor this repo changed
+        # since the previous release, so the same driver is not released twice.
+        skip=false
+        if [ "${{ github.event_name }}" = "schedule" ] && [ -n "$latest" ]; then
+          prev_mesa=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${latest}" --jq .body \
+                        | grep -oE 'mesa/-/commit/[0-9a-f]{40}' | head -n1 | cut -d/ -f3 || true)
+          repo_changes=$(git rev-list --count "refs/tags/${latest}..HEAD" 2>/dev/null || echo 1)
+          echo "Mesa: previous ${prev_mesa:-unknown}. Repo commits since ${latest}: ${repo_changes}"
+          if [ -n "$prev_mesa" ] && [ "$prev_mesa" = "$mesa_commit" ] && [ "$repo_changes" = "0" ]; then
+            skip=true
+            echo "Nothing changed since ${latest}, skipping this week's build." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
+
+        {
+          echo "version=${version}"
+          echo "mesa_commit=${mesa_commit}"
+          echo "skip=${skip}"
+          echo "do_release=${DO_RELEASE}"
+          echo "glibc=${GLIBC}"
+        } >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: android
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
+      NDK_VERSION: android-ndk-r29
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
 
     - name: Prepare environment
       run: |
-        sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-        sudo apt update
-        sudo apt install build-essential flex bison glslang-tools
-        sudo apt install meson-1.5 
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache zip unzip pkg-config python3-pip
+        # Mesa main needs a newer meson than Ubuntu 24.04 ships.
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: turnip_workdir/${{ env.NDK_VERSION }}
+        key: ndk-${{ env.NDK_VERSION }}
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-android-${{ github.run_id }}
+        restore-keys: ccache-android-
 
     - name: Execute build script
-      run: bash ./turnip_builder.sh
+      run: bash ./turnip_builder.sh 2>&1 | tee build-android.log
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-android
+        path: |
+          out/
+          build-android.log
+        if-no-files-found: error
+
+  glibc:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.glibc == 'true'
+    # Native arm64 build. Override with the GLIBC_RUNNER repository variable if needed.
+    runs-on: ${{ vars.GLIBC_RUNNER || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: glibc
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache pkg-config python3-pip \
+          zstd binutils libdrm-dev zlib1g-dev libexpat1-dev \
+          libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxxf86vm-dev libxshmfence-dev \
+          libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev \
+          libxcb-randr0-dev libxcb-shm0-dev
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-glibc-${{ github.run_id }}
+        restore-keys: ccache-glibc-
+
+    - name: Execute build script
+      run: |
+        # meson picks up ccache by itself when it is installed.
+        bash ./turnip_builder.sh 2>&1 | tee build-glibc.log
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-glibc
+        path: |
+          out/
+          build-glibc.log
+        if-no-files-found: error
+
+  release:
+    needs: [prepare, android, glibc]
+    # Runs when android succeeded and glibc either succeeded or was not requested.
+    if: >-
+      always() &&
+      needs.prepare.outputs.skip != 'true' &&
+      needs.android.result == 'success' &&
+      (needs.glibc.result == 'success' || needs.glibc.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download build output
+      uses: actions/download-artifact@v4
+      with:
+        pattern: turnip-*
+        merge-multiple: true
+
+    - name: Generate release notes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CHANGES: ${{ inputs.changes }}
+      run: |
+        ls -l out/
+        python3 release_notes.py > RELEASE_NOTES.md
+        # Only the packages go into the release.
+        mkdir -p release
+        cp out/*.zip release/
+        cp out/*.tzst release/ 2>/dev/null || true
+        ls -l release/
+        cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload release notes
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-notes-v${{ env.BUILD_VERSION }}
+        path: RELEASE_NOTES.md
 
     - name: Release "turnip"
-      uses: softprops/action-gh-release@v1
+      if: needs.prepare.outputs.do_release == 'true'
+      uses: softprops/action-gh-release@v2
       with:
-        body: |
-          A8XX Turnip Vulkan V${{ inputs.version }}  
-          Built from: https://github.com/whitebelyash/mesa-tu8
-          
-          >[!WARNING]
-          > This release is still Beta, especially for devices other than Adreno 840. PLEASE, don't report any issues to Mesa
-          > Original merge request is Draft again, so it's not ready
-                    
-          Supports following GPUs:
-          - Adreno 810 (tested, working, less stable than all other GPUs) - sysmem only
-          - Adreno 825 (tested, working with minor glitches compared to A830) - GMEM/sysmem
-          - Adreno 830 (tested, working) - sysmem-only - gmem causes GPU hangs
-          - Adreno 840 (tested, working) - GMEM/sysmem
-          Following GPUs were added but no proper testing was done:
-          - Adreno 829 (no testers were found)
-          
-          GPUs other than 830/840 can have reduced performance and/or more glitches. Can't do anything about that, sorry!  
-          Adreno 810 is additionally very slow, I'm not sure if you even want to use Turnip there
-          
-          Files:
-          * gen8 - main branch (upstream MR + hacks applied)
-          
-          Notes:
-          * Disable DXVK_HUD if you see weird black artifacts
-          * Apparently there are swizzling glitches in Eden & maybe other emulators, try increasing render scale(?)
-          * Some games may require AMD/NVIDIA GPU to run and refuse to start on Qualcomm or block some features. I've included a patch to spoof as Steam Deck - use `TU_DEBUG=deck_emu`
-          * If too unstable - activate nolrz: `TU_DEBUG=nolrz`.
-
-        tag_name: tu_v${{ inputs.version }}
-        name: Turnip A8XX v${{ inputs.version }}
-        files: |
-           /tmp/a8xx-gen8-V${{ inputs.version }}.zip
+        tag_name: ${{ env.BUILD_VERSION }}
+        name: Turnip Adreno 710,720,722 v${{ env.BUILD_VERSION }}
+        body_path: RELEASE_NOTES.md
+        draft: ${{ inputs.draft || false }}
+        files: release/*
+        fail_on_unmatched_files: true

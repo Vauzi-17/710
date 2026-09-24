@@ -42,6 +42,19 @@ Adreno GPU model numbers are shared across multiple Snapdragon chipset tiers, ea
 
 Note: in our testing, Mesa 24.3.4 tends to run lower FPS than Mesa 26.x on the same workloads. Try 26.x first unless you have a specific compatibility reason to use the legacy branch.
 
+## Building
+
+Builds come from upstream Mesa `main` ([gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa)), plus whatever is in [`patches/`](patches/README.md). An empty `patches/` folder means a plain upstream build.
+
+- **GitHub Actions**: run the *Build "turnip"* workflow. Leave the version empty to use the previous release + 1 (3.8 → 3.9, 3.9 → 4.0), or type one yourself. The workflow creates the release, generates the notes, and attaches `Turnip-710-720-722-v<version>.zip`, plus one extra zip for each folder under `patches/variants/`.
+- **Weekly build**: the same workflow runs every Sunday at 00:00 UTC with an automatic version and releases the Android build. It is skipped when neither Mesa `main` nor this repo changed since the previous release.
+- **Patch check**: every push that touches `patches/` runs the *Check patches* workflow. It applies the patches to the current Mesa `main` without compiling, so a patch that no longer fits upstream shows up in a few minutes.
+- **glibc build (experimental, off by default)**: tick the `glibc` input to also build `Turnip-710-720-722-v<version>-glibc.tzst` on a native arm64 runner. This is a Linux glibc build with X11 presentation for Winlator; extract it into the rootfs. The weekly build never includes it. If `ubuntu-24.04-arm` is not available to the repository, set the repository variable `GLIBC_RUNNER` to another arm64 runner label. `patches/glibc/` carries BrunoSX's Winlator changes ported to current Mesa. `TU_OVERRIDE_HEAP_SIZE` is enabled; the "Direct rendering" WSI patches are disabled for now, see [patches/glibc/STATUS.md](patches/glibc/STATUS.md).
+- **Locally**: `BUILD_VERSION=3.9 bash turnip_builder.sh`. Output goes to `out/`. The glibc build needs an arm64 Linux machine: `BUILD_VERSION=3.9 BUILD_TARGET=glibc bash turnip_builder.sh`.
+- **Check patches only** (no NDK, no compile): `BUILD_VERSION=test PATCH_ONLY=1 bash turnip_builder.sh`.
+
+For a longer "Changes" section, put the text in `release_notes/v<version>.md` before running the workflow.
+
 ## Support
 
 Questions or issues: **[t.me/vauzi_17](https://t.me/vauzi_17)**
@@ -50,35 +63,3 @@ Questions or issues: **[t.me/vauzi_17](https://t.me/vauzi_17)**
 
 - [whitebelyash](https://github.com/whitebelyash/mesa-tu8) — original A8XX Mesa patchset (gen8 branch) this work is based on
 - [Mesa Project](https://gitlab.freedesktop.org/mesa/mesa) — upstream Turnip/Freedreno Vulkan driver
-
-
-Old README:
-<details>
-  This is a bash script to build freedreno/turnip for android as a magisk module and an Adreno Tools driver package.
-
-### Scheduled Releases
-- Automated releases at 06:00 UTC on the 1st and 15th of each month.
-
-### Notes;
-
-#### Magisk build:
-- Root must be visible to target app/game.
-- Tested with these apps/games listed [here](list.md).
-
-#### Adreno Tools build:
-- Follow application specific instructions to install the driver package.
-
-### To Build Locally
-- Obtain the script [turnip_builder.sh](https://raw.githubusercontent.com/ilhan-athn7/freedreno_turnip-CI/main/turnip_builder.sh) on your linux environment. (visit the link and use ```CTRL + S``` keys)
-- Execute script on linux terminal ```bash ./turnip_builder.sh```
-- To build experimental branchs, change [this](https://github.com/ilhan-athn7/freedreno_turnip-CI/blob/6ef9860e7b755b8b7a83e4ecd398b355a56f9d49/turnip_builder.sh#L11) line, and add one more line to rename unzipped folder to mesa-main.
-
-### References
-
-- https://forum.xda-developers.com/t/getting-freedreno-turnip-mesa-vulkan-driver-on-a-poco-f3.4323871/
-
-- https://gitlab.freedesktop.org/mesa/mesa/-/issues/6802
-
-- https://github.com/bylaws/libadrenotools
-
-</details>
