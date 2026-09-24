@@ -41,6 +41,11 @@ on:
         required: false
         type: boolean
         default: false
+      replace:
+        description: 'Replace an existing release with the same version (deleted only after the new build succeeds)'
+        required: false
+        type: boolean
+        default: false
 
 # One release build at a time, so two runs can never pick the same version.
 concurrency:
@@ -61,6 +66,7 @@ jobs:
       skip: ${{ steps.resolve.outputs.skip }}
       do_release: ${{ steps.resolve.outputs.do_release }}
       glibc: ${{ steps.resolve.outputs.glibc }}
+      replace: ${{ steps.resolve.outputs.replace }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -75,6 +81,7 @@ jobs:
         # Scheduled runs have no inputs: release the Android build only.
         DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
         GLIBC: ${{ github.event_name != 'schedule' && inputs.glibc }}
+        REPLACE: ${{ inputs.replace || false }}
       run: |
         set -euo pipefail
         releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -100,8 +107,12 @@ jobs:
         echo "Previous release: ${latest:-none}, this build: ${version}"
 
         if [ "$DO_RELEASE" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
-          echo "::error::Tag ${version} already exists. Pick another version or delete the old release first."
-          exit 1
+          if [ "$REPLACE" = "true" ]; then
+            echo "::notice::Release ${version} exists and will be replaced once the new build succeeds."
+          else
+            echo "::error::Tag ${version} already exists. Pick another version, or run with 'replace' to rebuild it."
+            exit 1
+          fi
         fi
 
         # Both build jobs use this exact commit, so the zip and the tzst
@@ -140,6 +151,7 @@ jobs:
           echo "skip=${skip}"
           echo "do_release=${DO_RELEASE}"
           echo "glibc=${GLIBC}"
+          echo "replace=${REPLACE}"
         } >> "$GITHUB_OUTPUT"
 
   android:
@@ -155,6 +167,9 @@ jobs:
       MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
       BUILD_VARIANTS: ${{ inputs.variants || 'all' }}
       NDK_VERSION: android-ndk-r29
+      # The runner image sets ANDROID_NDK_HOME to its own NDK; clear it so
+      # the build always uses NDK_VERSION.
+      ANDROID_NDK_HOME: ''
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1G
     steps:
@@ -288,6 +303,22 @@ jobs:
       with:
         name: release-notes-v${{ env.BUILD_VERSION }}
         path: RELEASE_NOTES.md
+
+    # Only reached after both builds succeeded, so a failed rebuild keeps the
+    # old release in place.
+    - name: Delete the release being replaced
+      if: needs.prepare.outputs.do_release == 'true' && needs.prepare.outputs.replace == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if gh release view "$BUILD_VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release delete "$BUILD_VERSION" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          echo "Deleted the old release ${BUILD_VERSION} and its tag."
+        fi
+        # The tag can exist without a release.
+        if git ls-remote --exit-code --tags origin "refs/tags/${BUILD_VERSION}" >/dev/null; then
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${BUILD_VERSION}"
+        fi
 
     - name: Release "turnip"
       if: needs.prepare.outputs.do_release == 'true'

@@ -99,22 +99,30 @@ def sha256(path):
     return h.hexdigest()
 
 
-def previous_release():
-    """Latest published release of this repo, or None."""
+def previous_release(version):
+    """Newest published release of this repo other than `version`, or None.
+
+    Skipping `version` matters when a release is rebuilt in place: the old
+    copy of it must not count as "previous".
+    """
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo:
         return None
-    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest")
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=30")
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Accept", "application/vnd.github+json")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp)
-    except Exception as e:  # first release, no network, rate limit, ...
+            releases = json.load(resp)
+    except Exception as e:  # no network, rate limit, ...
         log(f"could not read previous release: {e}")
         return None
+    published = [r for r in releases
+                 if not r.get("draft") and not r.get("prerelease") and r.get("tag_name") != version]
+    published.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+    return published[0] if published else None
 
 
 def git(*args):
@@ -288,7 +296,7 @@ def main():
     if base or any(extras.values()) or glibc_only:
         add("")
 
-    result = upstream_commits(previous_release(), mesa_commit, info.get("MESA_REF", "main"),
+    result = upstream_commits(previous_release(version), mesa_commit, info.get("MESA_REF", "main"),
                               info.get("MESA_REPO", MESA_WEB))
     if result:
         prev, commits = result
