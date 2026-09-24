@@ -28,7 +28,8 @@
 #   GLIBC_ICD_LIBRARY_PATH  library_path written to the glibc ICD json
 #                     (default: /data/data/com.winlator/files/rootfs/lib/libvulkan_freedreno.so)
 #   GLIBC_EXTRA_LIBS  Host libraries copied into the .tzst next to the driver
-#                     (default: libxcb-xfixes.so.0, set to "" for none)
+#                     when the driver links them (default: libxcb-xfixes.so.0,
+#                     which the upstream X11 WSI needs and Winlator lacks)
 #   GLIBC_ROOTFS_LIBS Libraries the target rootfs provides; the build fails if
 #                     the driver needs one that is in neither list
 #
@@ -489,22 +490,30 @@ package_tzst(){
 }
 EOF
 
-	local extra path ldcache
+	local needed
+	needed="$(readelf -d "$lib" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+
+	# Bundle a GLIBC_EXTRA_LIBS entry only when the driver links it.
+	local extra path ldcache bundled=""
 	ldcache="$(ldconfig -p)"
 	for extra in $GLIBC_EXTRA_LIBS; do
+		case " $needed " in
+		*" $extra "*) ;;
+		*) continue ;;
+		esac
 		path="$(awk -v n="$extra" '$1 == n && /AArch64|aarch64/ && !found {print $NF; found=1}' <<< "$ldcache")"
 		[ -n "$path" ] || die "extra library $extra not found on the build host"
 		cp -L "$path" "$pkg/usr/lib/$extra"
+		bundled="$bundled $extra"
 	done
 
 	# What the rootfs has to provide, for the release notes.
-	local needed glibc_req glibcxx_req
-	needed="$(readelf -d "$lib" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+	local glibc_req glibcxx_req
 	glibc_req="$(objdump -T "$pkg"/usr/lib/*.so* | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -n1)"
 	glibcxx_req="$(objdump -T "$lib" | grep -oE 'GLIBCXX_[0-9]+(\.[0-9]+)+' | sed 's/GLIBCXX_//' | sort -Vu | tail -n1 || true)"
 	local dep missing=""
 	for dep in $needed; do
-		case " $GLIBC_ROOTFS_LIBS $GLIBC_EXTRA_LIBS " in
+		case " $GLIBC_ROOTFS_LIBS $bundled " in
 		*" $dep "*) ;;
 		*) missing="$missing $dep" ;;
 		esac
@@ -515,7 +524,7 @@ EOF
 GLIBC_REQUIRED=$glibc_req
 GLIBCXX_REQUIRED=$glibcxx_req
 GLIBC_NEEDED=${needed% }
-GLIBC_EXTRA_LIBS=$GLIBC_EXTRA_LIBS
+GLIBC_EXTRA_LIBS=${bundled# }
 GLIBC_BUILD_HOST=$(. /etc/os-release && echo "$PRETTY_NAME")
 GLIBC_ICD_LIBRARY_PATH=$GLIBC_ICD_LIBRARY_PATH
 EOF
