@@ -1,0 +1,54 @@
+Subject: [PATCH] tu/lrz: reuse LRZ state for DONT_CARE depth when rendering in sysmem
+
+Renderpasses whose depth attachment is neither cleared nor loaded
+(LOAD_OP_DONT_CARE) invalidate LRZ for the whole pass ("Depth attachment
+isn't loaded or cleared"). With rendering forced to sysmem (TU_DEBUG=sysmem),
+DONT_CARE leaves the depth data in memory untouched, the same as LOAD, so the
+LRZ state from the previous renderpass still matches it. On A7xx, GPU
+direction tracking checks that state and disables LRZ at runtime when it is
+not valid, the same way it does for LOAD.
+
+Only active with TU_DEBUG=sysmem on GPUs with LRZ direction tracking.
+TU_LRZ_REUSE_DONT_CARE=0 turns it off.
+
+Seen with Sleeping Dogs: Definitive Edition, where this was the most common
+reason for LRZ being disabled (7067 of about 22000 LRZ warnings).
+---
+diff --git a/src/freedreno/vulkan/tu_lrz.cc b/src/freedreno/vulkan/tu_lrz.cc
+index 15e1eca4a..5525fc36a 100644
+--- a/src/freedreno/vulkan/tu_lrz.cc
++++ b/src/freedreno/vulkan/tu_lrz.cc
+@@ -237,6 +237,24 @@ tu6_disable_lrz_via_depth_view(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
+    tu_emit_event_write<CHIP>(cmd, cs, FD_LRZ_FLUSH);
+ }
+ 
++/* With rendering forced to sysmem (TU_DEBUG=sysmem), LOAD_OP_DONT_CARE leaves
++ * the depth attachment in memory untouched, exactly like LOAD_OP_LOAD. The
++ * LRZ state left by the previous renderpass therefore still matches the
++ * depth data, and the GPU direction tracking disables LRZ at runtime if that
++ * state is not valid. So such renderpasses can reuse it instead of dropping
++ * LRZ for the whole pass. Set TU_LRZ_REUSE_DONT_CARE=0 to turn this off.
++ */
++static bool
++tu_lrz_reuse_dont_care(struct tu_cmd_buffer *cmd)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = debug_get_bool_option("TU_LRZ_REUSE_DONT_CARE", true);
++
++   return enabled && TU_DEBUG(SYSMEM) &&
++          cmd->device->physical_device->info->props.has_lrz_dir_tracking;
++}
++
+ static void
+ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
+                   const struct tu_render_pass_attachment *att,
+@@ -274,7 +292,7 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
+       return;
+    }
+ 
+-   if (!clears_depth && !att->load) {
++   if (!clears_depth && !att->load && !tu_lrz_reuse_dont_care(cmd)) {
+       tu_lrz_invalidate(cmd, "Depth attachment isn't loaded or cleared");
+       return;
+    }
