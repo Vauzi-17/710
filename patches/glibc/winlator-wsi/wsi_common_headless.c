@@ -1,0 +1,603 @@
+/*
+ * Copyright 2021 Red Hat, Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+/** VK_EXT_headless_surface */
+
+#include "util/macros.h"
+#include "util/timespec.h"
+#include "vk_util.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
+#include "wsi_common_entrypoints.h"
+#include "wsi_common_private.h"
+
+#include "drm-uapi/drm_fourcc.h"
+
+struct wsi_headless {
+   struct wsi_interface base;
+};
+
+static VkResult
+wsi_headless_surface_get_support(VkIcdSurfaceBase *surface,
+                                 struct wsi_device *wsi_device,
+                                 uint32_t queueFamilyIndex,
+                                 VkBool32* pSupported)
+{
+   *pSupported = true;
+
+   return VK_SUCCESS;
+}
+
+static const VkPresentModeKHR present_modes[] = {
+   VK_PRESENT_MODE_MAILBOX_KHR,
+   VK_PRESENT_MODE_FIFO_KHR,
+};
+
+static VkResult
+wsi_headless_surface_get_capabilities(VkIcdSurfaceBase *surface,
+                                      struct wsi_device *wsi_device,
+                                      VkSurfaceCapabilitiesKHR* caps)
+{
+   /* For true mailbox mode, we need at least 4 images:
+    *  1) One to scan out from
+    *  2) One to have queued for scan-out
+    *  3) One to be currently held by the Wayland compositor
+    *  4) One to render to
+    */
+   caps->minImageCount = 4;
+   /* There is no real maximum */
+   caps->maxImageCount = 0;
+
+   caps->currentExtent = (VkExtent2D) { -1, -1 };
+   caps->minImageExtent = (VkExtent2D) { 1, 1 };
+   caps->maxImageExtent = (VkExtent2D) {
+      wsi_device->maxImageDimension2D,
+      wsi_device->maxImageDimension2D,
+   };
+
+   caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+   caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+   caps->maxImageArrayLayers = 1;
+
+   caps->supportedCompositeAlpha =
+      VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR |
+      VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+
+   caps->supportedUsageFlags = wsi_caps_get_image_usage();
+
+   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
+   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
+      caps->supportedUsageFlags |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_headless_surface_get_capabilities2(VkIcdSurfaceBase *surface,
+                                       struct wsi_device *wsi_device,
+                                       const void *info_next,
+                                       VkSurfaceCapabilities2KHR* caps)
+{
+   assert(caps->sType == VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR);
+
+   const VkSurfacePresentModeKHR *present_mode =
+      vk_find_struct_const(info_next, SURFACE_PRESENT_MODE_EXT);
+
+   VkResult result =
+      wsi_headless_surface_get_capabilities(surface, wsi_device,
+                                      &caps->surfaceCapabilities);
+
+   vk_foreach_struct(stype, ext, caps->pNext) {
+      switch (stype) {
+      case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
+         VkSurfaceProtectedCapabilitiesKHR *protected = (void *)ext;
+         protected->supportsProtected = VK_FALSE;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: {
+         /* Unsupported */
+         VkSurfacePresentScalingCapabilitiesKHR *scaling = (void *)ext;
+         scaling->supportedPresentScaling = 0;
+         scaling->supportedPresentGravityX = 0;
+         scaling->supportedPresentGravityY = 0;
+         scaling->minScaledImageExtent = caps->surfaceCapabilities.minImageExtent;
+         scaling->maxScaledImageExtent = caps->surfaceCapabilities.maxImageExtent;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: {
+         /* Unsupported */
+         VkSurfacePresentModeCompatibilityKHR *compat = (void *)ext;
+         if (compat->pPresentModes == NULL) {
+            if (!present_mode) {
+               wsi_common_vk_warn_once("Use of VkSurfacePresentModeCompatibilityKHR "
+                                       "without a VkSurfacePresentModeKHR set. This is an "
+                                       "application bug.\n");
+            }
+            compat->presentModeCount = 1;
+         } else if (compat->presentModeCount) {
+            assert(present_mode);
+            compat->presentModeCount = 1;
+            compat->pPresentModes[0] = present_mode->presentMode;
+         }
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
+         VkPresentTimingSurfaceCapabilitiesEXT *wait = (void *)ext;
+
+         wait->presentStageQueries = 0;
+         wait->presentTimingSupported = VK_FALSE;
+         wait->presentAtAbsoluteTimeSupported = VK_FALSE;
+         wait->presentAtRelativeTimeSupported = VK_FALSE;
+         break;
+      }
+
+      default:
+         /* Ignored */
+         break;
+      }
+   }
+
+   return result;
+}
+
+static VkResult
+wsi_headless_surface_get_formats(VkIcdSurfaceBase *icd_surface,
+                                 struct wsi_device *wsi_device,
+                                 uint32_t* pSurfaceFormatCount,
+                                 VkSurfaceFormatKHR* pSurfaceFormats)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out, pSurfaceFormats, pSurfaceFormatCount);
+
+   if (wsi_device->force_bgra8_unorm_first) {
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_B8G8R8A8_UNORM;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_R8G8B8A8_UNORM;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_B8G8R8A8_SRGB;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_R8G8B8A8_SRGB;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+   } else {
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_R8G8B8A8_UNORM;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_B8G8R8A8_UNORM;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_R8G8B8A8_SRGB;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
+         out_fmt->format = VK_FORMAT_B8G8R8A8_SRGB;
+         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+   }
+
+   return vk_outarray_status(&out);
+}
+
+static VkResult
+wsi_headless_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
+                                  struct wsi_device *wsi_device,
+                                  const void *info_next,
+                                  uint32_t* pSurfaceFormatCount,
+                                  VkSurfaceFormat2KHR* pSurfaceFormats)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out, pSurfaceFormats, pSurfaceFormatCount);
+
+   if (wsi_device->force_bgra8_unorm_first) {
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_B8G8R8A8_UNORM;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_R8G8B8A8_UNORM;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_B8G8R8A8_SRGB;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_R8G8B8A8_SRGB;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+   } else {
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_R8G8B8A8_UNORM;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_B8G8R8A8_UNORM;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_R8G8B8A8_SRGB;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
+         out_fmt->surfaceFormat.format = VK_FORMAT_B8G8R8A8_SRGB;
+         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+      }
+   }
+
+   return vk_outarray_status(&out);
+}
+
+static VkResult
+wsi_headless_surface_get_present_modes(VkIcdSurfaceBase *surface,
+                                       struct wsi_device *wsi_device,
+                                       uint32_t* pPresentModeCount,
+                                       VkPresentModeKHR* pPresentModes)
+{
+   if (pPresentModes == NULL) {
+      *pPresentModeCount = ARRAY_SIZE(present_modes);
+      return VK_SUCCESS;
+   }
+
+   *pPresentModeCount = MIN2(*pPresentModeCount, ARRAY_SIZE(present_modes));
+   typed_memcpy(pPresentModes, present_modes, *pPresentModeCount);
+
+   if (*pPresentModeCount < ARRAY_SIZE(present_modes))
+      return VK_INCOMPLETE;
+   else
+      return VK_SUCCESS;
+}
+
+static VkResult
+wsi_headless_surface_get_present_rectangles(VkIcdSurfaceBase *surface,
+                                            struct wsi_device *wsi_device,
+                                            uint32_t* pRectCount,
+                                            VkRect2D* pRects)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
+
+   vk_outarray_append_typed(VkRect2D, &out, rect) {
+      /* We don't know a size so just return the usual "I don't know." */
+      *rect = (VkRect2D) {
+         .offset = { 0, 0 },
+         .extent = { UINT32_MAX, UINT32_MAX },
+      };
+   }
+
+   return vk_outarray_status(&out);
+}
+
+struct wsi_headless_image {
+   struct wsi_image base;
+
+   /* whether the host side ownership is taken by the app or the display */
+   bool busy_on_host;
+
+   /* whether the image may still be worked on by the device
+    *
+    * The headless display does not involve a presentation queue to wait for
+    * the gpu out-fence. To let the app acquire the most likely idle image, we
+    * use a second boolean to steer the app to acquire all the swapchain images
+    * in a loop.
+    */
+   bool busy_on_device;
+};
+
+struct wsi_headless_swapchain {
+   struct wsi_swapchain base;
+   struct wsi_headless_image images[0];
+};
+VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_headless_swapchain, base.base, VkSwapchainKHR,
+                               VK_OBJECT_TYPE_SWAPCHAIN_KHR)
+
+static struct wsi_image *
+wsi_headless_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
+                                     uint32_t image_index)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+   return &chain->images[image_index].base;
+}
+
+static VkResult
+wsi_headless_swapchain_release_images(struct wsi_swapchain *wsi_chain,
+                                      uint32_t count, const uint32_t *indices)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+
+   for (uint32_t i = 0; i < count; i++) {
+      uint32_t index = indices[i];
+      assert(index < chain->base.image_count);
+      chain->images[index].busy_on_device = false;
+      chain->images[index].busy_on_host = false;
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_headless_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+                                          const VkAcquireNextImageInfoKHR *info,
+                                          uint32_t *image_index)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+   struct timespec start_time, end_time;
+   struct timespec rel_timeout;
+
+   timespec_from_nsec(&rel_timeout, info->timeout);
+
+   clock_gettime(CLOCK_MONOTONIC, &start_time);
+   timespec_add(&end_time, &rel_timeout, &start_time);
+
+   while (1) {
+      /* Try to find a free image. */
+      for (uint32_t i = 0; i < chain->base.image_count; i++) {
+         if (!chain->images[i].busy_on_host) {
+            if (chain->images[i].busy_on_device) {
+               /* simple trick to avoid the just presented image */
+               chain->images[i].busy_on_device = false;
+               continue;
+            }
+
+            /* We found a non-busy image */
+            *image_index = i;
+            chain->images[i].busy_on_host = true;
+            chain->images[i].busy_on_device = true;
+            return VK_SUCCESS;
+         }
+      }
+
+      /* Check for timeout. */
+      struct timespec current_time;
+      clock_gettime(CLOCK_MONOTONIC, &current_time);
+      if (timespec_after(&current_time, &end_time))
+         return VK_NOT_READY;
+   }
+}
+
+static VkResult
+wsi_headless_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+                                     uint32_t image_index,
+                                     uint64_t present_id,
+                                     const VkPresentRegionKHR *damage)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+
+   assert(image_index < chain->base.image_count);
+
+   chain->images[image_index].busy_on_host = false;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_headless_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+                                        uint64_t waitValue,
+                                        uint64_t timeout)
+{
+   return wsi_swapchain_wait_for_present_semaphore(
+      wsi_chain, waitValue, timeout);
+}
+
+static VkResult
+wsi_headless_swapchain_destroy(struct wsi_swapchain *wsi_chain,
+                               const VkAllocationCallbacks *pAllocator)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      if (chain->images[i].base.image != VK_NULL_HANDLE)
+         wsi_destroy_image(&chain->base, &chain->images[i].base);
+   }
+
+   wsi_swapchain_finish(&chain->base);
+
+   vk_free(pAllocator, chain);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+                                      VkDevice device,
+                                      struct wsi_device *wsi_device,
+                                      const VkSwapchainCreateInfoKHR* pCreateInfo,
+                                      const VkAllocationCallbacks* pAllocator,
+                                      struct wsi_swapchain **swapchain_out)
+{
+   struct wsi_headless_swapchain *chain;
+   VkResult result;
+
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
+
+   int num_images = pCreateInfo->minImageCount;
+
+   size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
+   chain = vk_zalloc(pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (chain == NULL)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   VkDrmFormatModifierPropertiesListEXT mod_list = {
+      .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+   };
+   VkFormatProperties2 props = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+      .pNext = &mod_list,
+   };
+   if (!wsi_device->sw && wsi_device->supports_modifiers) {
+      wsi_device->GetPhysicalDeviceFormatProperties2(
+         wsi_device->pdevice, pCreateInfo->imageFormat, &props);
+      assert(mod_list.drmFormatModifierCount > 0);
+   }
+
+   STACK_ARRAY(VkDrmFormatModifierPropertiesEXT, mod_props,
+               mod_list.drmFormatModifierCount);
+   STACK_ARRAY(uint64_t, mods, mod_list.drmFormatModifierCount);
+
+   if (mod_list.drmFormatModifierCount > 0) {
+      mod_list.pDrmFormatModifierProperties = mod_props;
+      wsi_device->GetPhysicalDeviceFormatProperties2(
+         wsi_device->pdevice, pCreateInfo->imageFormat, &props);
+
+      for (uint32_t i = 0; i < mod_list.drmFormatModifierCount; i++)
+         mods[i] = mod_props[i].drmFormatModifier;
+   }
+
+   struct wsi_base_image_params *image_params = NULL;
+   struct wsi_cpu_image_params cpu_params;
+   struct wsi_drm_image_params drm_params;
+   if (wsi_device->sw) {
+      cpu_params = (struct wsi_cpu_image_params) {
+         .base.image_type = WSI_IMAGE_TYPE_CPU,
+      };
+      image_params = &cpu_params.base;
+   } else {
+      drm_params = (struct wsi_drm_image_params) {
+         .base.image_type = WSI_IMAGE_TYPE_DRM,
+         .same_gpu = true,
+         .num_modifier_lists = mod_list.drmFormatModifierCount > 0 ? 1 : 0,
+         .num_modifiers = &mod_list.drmFormatModifierCount,
+         .modifiers = (const uint64_t **)&mods,
+      };
+      image_params = &drm_params.base;
+   }
+
+   result = wsi_swapchain_init(wsi_device, &chain->base, device,
+                               pCreateInfo, image_params, pAllocator);
+
+   STACK_ARRAY_FINISH(mods);
+   STACK_ARRAY_FINISH(mod_props);
+
+   if (result != VK_SUCCESS)
+      goto fail_free_chain;
+
+   chain->base.destroy = wsi_headless_swapchain_destroy;
+   chain->base.get_wsi_image = wsi_headless_swapchain_get_wsi_image;
+   chain->base.acquire_next_image = wsi_headless_swapchain_acquire_next_image;
+   chain->base.release_images = wsi_headless_swapchain_release_images;
+   chain->base.queue_present = wsi_headless_swapchain_queue_present;
+   chain->base.wait_for_present = wsi_headless_swapchain_wait_for_present;
+   chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
+   chain->base.image_count = num_images;
+
+   uint32_t image = 0;
+   for (; image < chain->base.image_count; image++) {
+      result = wsi_create_image(&chain->base, &chain->base.image_info,
+                                &chain->images[image].base);
+      if (result != VK_SUCCESS)
+         goto fail_destroy_images;
+
+      chain->images[image].busy_on_host = false;
+      chain->images[image].busy_on_device = false;
+   }
+
+   *swapchain_out = &chain->base;
+
+   return VK_SUCCESS;
+
+fail_destroy_images:
+   for (uint32_t i = 0; i < image; i++)
+      wsi_destroy_image(&chain->base, &chain->images[i].base);
+   wsi_swapchain_finish(&chain->base);
+fail_free_chain:
+   vk_free(pAllocator, chain);
+
+   return result;
+}
+
+VkResult
+wsi_headless_init_wsi(struct wsi_device *wsi_device,
+                      const VkAllocationCallbacks *alloc,
+                      VkPhysicalDevice physical_device)
+{
+   struct wsi_headless *wsi;
+   VkResult result;
+
+   wsi = vk_alloc(alloc, sizeof(*wsi), 8,
+                   VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!wsi) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto fail;
+   }
+
+   wsi->base.get_support = wsi_headless_surface_get_support;
+   wsi->base.get_capabilities2 = wsi_headless_surface_get_capabilities2;
+   wsi->base.get_formats = wsi_headless_surface_get_formats;
+   wsi->base.get_formats2 = wsi_headless_surface_get_formats2;
+   wsi->base.get_present_modes = wsi_headless_surface_get_present_modes;
+   wsi->base.get_present_rectangles = wsi_headless_surface_get_present_rectangles;
+   wsi->base.create_swapchain = wsi_headless_surface_create_swapchain;
+
+   wsi_device->wsi[VK_ICD_WSI_PLATFORM_HEADLESS] = &wsi->base;
+
+   return VK_SUCCESS;
+
+fail:
+   wsi_device->wsi[VK_ICD_WSI_PLATFORM_HEADLESS] = NULL;
+
+   return result;
+}
+
+void
+wsi_headless_finish_wsi(struct wsi_device *wsi_device,
+                        const VkAllocationCallbacks *alloc)
+{
+   struct wsi_headless *wsi =
+      (struct wsi_headless *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_HEADLESS];
+   if (!wsi)
+      return;
+
+   vk_free(alloc, wsi);
+}
+
+VkResult wsi_CreateHeadlessSurfaceEXT(
+    VkInstance                                  _instance,
+    const VkHeadlessSurfaceCreateInfoEXT*       pCreateInfo,
+    const VkAllocationCallbacks*                pAllocator,
+    VkSurfaceKHR*                               pSurface)
+{
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
+   VkIcdSurfaceHeadless *surface;
+
+   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (surface == NULL)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   surface->base.platform = VK_ICD_WSI_PLATFORM_HEADLESS;
+
+   *pSurface = VkIcdSurfaceBase_to_handle(&surface->base);
+   return VK_SUCCESS;
+}

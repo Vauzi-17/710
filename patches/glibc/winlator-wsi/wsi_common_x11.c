@@ -391,28 +391,12 @@ wsi_x11_surface_get_support(VkIcdSurfaceBase *icd_surface,
    return VK_SUCCESS;
 }
 
-/* Winlator: present through the window's hardware buffer, shared by the X
- * server over DRI3 BufferFromPixmap. Winlator up to app version 32 sets
- * MESA_VK_WSI_USE_HWBUF, later versions set MESA_VK_WSI_NATIVE_MEM_IMPORTED.
- */
-static bool
-wsi_x11_env_enabled(const char *name)
-{
-   const char *value = getenv(name);
-   return value && (!strcmp(value, "true") || !strcmp(value, "1"));
-}
-
-static bool
-wsi_x11_use_hwbuf(void)
-{
-   return wsi_x11_env_enabled("MESA_VK_WSI_USE_HWBUF") ||
-          wsi_x11_env_enabled("MESA_VK_WSI_NATIVE_MEM_IMPORTED");
-}
-
 static uint32_t
 wsi_x11_get_min_image_count(const struct wsi_device *wsi_device, const VkSurfacePresentModeEXT *present_mode)
 {
-   if (wsi_device->sw || wsi_x11_use_hwbuf())
+   const char *use_hwbuf = getenv("MESA_VK_WSI_USE_HWBUF");
+
+   if (wsi_device->sw || (use_hwbuf && (!strcmp(use_hwbuf, "true") || !strcmp(use_hwbuf, "1"))))
       return 1;
    else if (present_mode && 
             present_mode->presentMode == VK_PRESENT_MODE_MAILBOX_KHR)
@@ -1395,7 +1379,8 @@ wsi_x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    if (chain->extent.width != cur_width || chain->extent.height != cur_height)
        chain->status = VK_SUBOPTIMAL_KHR;
 
-   if (wsi_x11_use_hwbuf()) {
+   const char *use_hwbuf = getenv("MESA_VK_WSI_USE_HWBUF");
+   if (use_hwbuf && (!strcmp(use_hwbuf, "true") || !strcmp(use_hwbuf, "1"))) {
       uint16_t hwbuf_stride;
       wsi_x11_get_hwbuf_info(chain->conn, chain->window, &chain->base.image_info.hwbuf_fd, &hwbuf_stride);
       if (hwbuf_stride > 0) chain->base.image_info.create.extent.width = hwbuf_stride;

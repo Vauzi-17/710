@@ -437,7 +437,9 @@ compile_glibc(){
 	# Keep runtime dependencies to what a Winlator rootfs is likely to have:
 	# zstd off (the shader cache falls back to zlib), and no xcb-keysyms,
 	# which the X11 WSI only uses for a trace hotkey (the workflow does not
-	# install its headers). libstdc++ is linked statically, so the driver
+	# install its headers). msm is built along with kgsl, as in BrunoSX's
+	# Winlator builds: it pulls in libdrm, without which the WSI's DRM image
+	# path (wsi_common_drm.c) is not compiled. libstdc++ is linked statically, so the driver
 	# does not depend on the rootfs having a libstdc++ as new as the build
 	# host's.
 	echo "Configuring (glibc, X11) ..."
@@ -450,7 +452,7 @@ compile_glibc(){
 		-Dplatforms=x11 \
 		-Dgallium-drivers= \
 		-Dvulkan-drivers=freedreno \
-		-Dfreedreno-kmds=kgsl \
+		-Dfreedreno-kmds=kgsl,msm \
 		-Dvulkan-beta=true \
 		-Dshader-cache=enabled \
 		-Dxmlconfig=disabled \
