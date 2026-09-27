@@ -27,15 +27,15 @@ on:
         type: string
         default: 'all'
       glibc:
-        description: 'Also build the experimental glibc (Winlator) .tzst'
-        required: false
-        type: boolean
-        default: false
-      release:
-        description: 'Publish a GitHub release (off = build and upload artifacts only)'
+        description: 'Also build the glibc (Winlator) .tzst'
         required: false
         type: boolean
         default: true
+      release:
+        description: 'Publish a GitHub release (off = build and upload artifacts only). Keep off on the glibc branch.'
+        required: false
+        type: boolean
+        default: false
       draft:
         description: 'Create the release as a draft'
         required: false

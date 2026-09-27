@@ -24,4 +24,8 @@ off. Two causes, found in the source:
 - `03-tu-override-heap-size.py` and `04-tu-linear-rgba8-msaa.patch`: the
   Turnip changes of the official builds.
 
-Compiled against Mesa main 9315107; not yet tested on device.
+Compiled against Mesa main 9315107 and tested on an Adreno 710 with Winlator
+11.2: Test DirectX 11 runs (about 670 FPS) with Direct rendering on.
+
+The kgsl,msm option and the whole-WSI copy were changed in the same build, so
+it is not proven that the meson option alone would have been enough.
