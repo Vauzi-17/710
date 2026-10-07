@@ -37,6 +37,7 @@
 #   patches/*.patch|*.diff|*.py|*.sh   applied to every build, in name order
 #   patches/variants/<name>/...        extra patches for the <name> variant,
 #                                      which is built as a separate zip
+#                                      (.py/.sh patches get BUILD_VARIANT=<name>)
 #   patches/glibc/...                  extra patches for the glibc target only
 #   anything else (README, sub folders, *.off) is ignored
 
@@ -294,6 +295,9 @@ build_variant(){
 	local patchlog="$OUT_DIR/patches-$variant.txt"
 	: > "$patchlog"
 
+	# .py/.sh patches can read the variant name, e.g. WinNative's
+	# apply_perf_variant.py picks p / p1 / p2 from BUILD_VARIANT.
+	export BUILD_VARIANT="$variant"
 	apply_patch_dir "$PATCH_DIR" "$patchlog"
 	if [ "$variant" != "base" ]; then
 		apply_patch_dir "$PATCH_DIR/variants/$variant" "$patchlog"
