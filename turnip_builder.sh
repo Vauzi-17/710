@@ -548,7 +548,7 @@ package_zink(){
   "description": "Mesa Zink (OpenGL on Vulkan), Mesa ${MESA_COMMIT:0:10}",
   "author": "$DRIVER_AUTHOR",
   "driverVersion": "Mesa $MESA_VERSION",
-  "minApi": 29,
+  "minApi": $sdkver,
   "libraryName": "libEGL_mesa.so"
 }
 EOF
