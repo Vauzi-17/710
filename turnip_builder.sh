@@ -133,12 +133,18 @@ check_deps(){
 	local deps="git python3 patch"
 	if [ "$PATCH_ONLY" != "1" ]; then
 		deps="$deps meson ninja flex bison glslangValidator"
-		if [ "$BUILD_TARGET" = "android" ]; then
+		case "$BUILD_TARGET" in
+		android)
 			deps="$deps unzip curl zip"
-		else
+			;;
+		zink)
+			deps="$deps unzip curl zip readelf patchelf"
+			;;
+		glibc)
 			deps="$deps cc c++ pkg-config tar zstd readelf objdump"
 			[ "$(uname -m)" = "aarch64" ] || die "the glibc target builds natively and needs an aarch64 host (this is $(uname -m))"
-		fi
+			;;
+		esac
 	fi
 
 	echo "Checking dependencies ..."

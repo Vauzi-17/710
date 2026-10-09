@@ -203,7 +203,9 @@ jobs:
         restore-keys: ccache-android-
 
     - name: Execute build script
-      run: bash ./turnip_builder.sh 2>&1 | tee build-android.log
+      run: |
+        set -o pipefail
+        bash ./turnip_builder.sh 2>&1 | tee build-android.log
 
     - name: Upload build output
       if: always()
@@ -257,7 +259,9 @@ jobs:
         restore-keys: ccache-zink-
 
     - name: Execute build script
-      run: bash ./turnip_builder.sh 2>&1 | tee build-zink.log
+      run: |
+        set -o pipefail
+        bash ./turnip_builder.sh 2>&1 | tee build-zink.log
 
     - name: Summary
       if: always()
@@ -319,6 +323,7 @@ jobs:
     - name: Execute build script
       run: |
         # meson picks up ccache by itself when it is installed.
+        set -o pipefail
         bash ./turnip_builder.sh 2>&1 | tee build-glibc.log
 
     - name: Upload build output
