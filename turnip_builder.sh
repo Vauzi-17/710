@@ -7,14 +7,18 @@
 #   android  Android/Bionic build, packed as an AdrenoTools zip (default)
 #   glibc    Linux glibc build with X11 WSI, packed as a .tzst for Winlator.
 #            Must run on an aarch64 Linux host; it compiles natively.
+#   zink     Android build of Zink (OpenGL on Vulkan) as libEGL_mesa.so +
+#            libgallium_dri.so, for launchers that load Mesa EGL (MojoLauncher).
+#            Zink dlopen()s libvulkan.so, so the launcher picks the Turnip.
 #
 # Usage:
 #   BUILD_VERSION=3.9 bash turnip_builder.sh
 #   BUILD_VERSION=3.9 BUILD_TARGET=glibc bash turnip_builder.sh
+#   BUILD_VERSION=3.9 BUILD_TARGET=zink bash turnip_builder.sh
 #
 # Settings (environment variables, all optional except BUILD_VERSION):
 #   BUILD_VERSION     Release version, e.g. 3.9 (used in zip name and meta.json)
-#   BUILD_TARGET      android (default) or glibc
+#   BUILD_TARGET      android (default), glibc or zink
 #   MESA_REPO         Mesa git repository   (default: upstream GitLab)
 #   MESA_REF          Branch, tag or commit (default: main)
 #   BUILD_VARIANTS    Which builds to make: "all" (default), or a space
@@ -39,6 +43,8 @@
 #                                      which is built as a separate zip
 #                                      (.py/.sh patches get BUILD_VARIANT=<name>)
 #   patches/glibc/...                  extra patches for the glibc target only
+#   patches/zink/...                   extra patches for the zink target only
+#                                      (zink builds ignore patches/variants/)
 #   anything else (README, sub folders, *.off) is ignored
 
 set -euo pipefail
@@ -73,6 +79,10 @@ GLIBC_ROOTFS_LIBS="${GLIBC_ROOTFS_LIBS-libz.so.1 libdrm.so.2 libxcb.so.1 libX11-
 sdkver="34"
 platform_sdkver="36"
 
+# Libraries MojoLauncher's own Mesa build needs from the phone. The zink build
+# warns when Zink needs anything else that is not packed into the zip.
+ZINK_SYSTEM_LIBS="${ZINK_SYSTEM_LIBS-libc.so libm.so libdl.so liblog.so libz.so libsync.so libnativewindow.so libhardware.so}"
+
 # meta.json fields
 DRIVER_NAME="${DRIVER_NAME:-710 720 & 722}"
 DRIVER_DESCRIPTION="${DRIVER_DESCRIPTION:-Turnip driver for Adreno 710/720/722}"
@@ -94,8 +104,8 @@ run_all(){
 	[ -n "$BUILD_VERSION" ] || die "BUILD_VERSION is not set (example: BUILD_VERSION=3.9 bash turnip_builder.sh)"
 
 	case "$BUILD_TARGET" in
-	android|glibc) ;;
-	*) die "BUILD_TARGET must be android or glibc, not '$BUILD_TARGET'" ;;
+	android|glibc|zink) ;;
+	*) die "BUILD_TARGET must be android, glibc or zink, not '$BUILD_TARGET'" ;;
 	esac
 
 	info "====== Turnip 710/720/722 v$BUILD_VERSION ($BUILD_TARGET) ======"
@@ -104,7 +114,7 @@ run_all(){
 	rm -rf "$OUT_DIR"
 	mkdir -p "$OUT_DIR"
 
-	if [ "$PATCH_ONLY" != "1" ] && [ "$BUILD_TARGET" = "android" ]; then
+	if [ "$PATCH_ONLY" != "1" ] && [ "$BUILD_TARGET" != "glibc" ]; then
 		prepare_ndk
 	fi
 	clone_mesa
@@ -204,6 +214,11 @@ EOF
 # "base" is the build with only the common patches. Every folder under
 # patches/variants/ adds one more build on top of it.
 resolve_variants(){
+	# Variants carry Turnip changes; Zink is built once.
+	if [ "$BUILD_TARGET" = "zink" ]; then
+		echo "base"
+		return
+	fi
 	if [ "$BUILD_VARIANTS" != "all" ]; then
 		echo "$BUILD_VARIANTS"
 		return
@@ -305,6 +320,9 @@ build_variant(){
 	if [ "$BUILD_TARGET" = "glibc" ]; then
 		apply_patch_dir "$PATCH_DIR/glibc" "$OUT_DIR/patches-glibc-$variant.txt"
 	fi
+	if [ "$BUILD_TARGET" = "zink" ]; then
+		apply_patch_dir "$PATCH_DIR/zink" "$OUT_DIR/patches-zink.txt"
+	fi
 
 	git -C "$srcdir" diff --stat HEAD | tail -n 1
 
@@ -316,18 +334,18 @@ build_variant(){
 	if [ "$BUILD_TARGET" = "glibc" ]; then
 		compile_glibc "$variant"
 		package_tzst "$variant" "$suffix"
+	elif [ "$BUILD_TARGET" = "zink" ]; then
+		compile_zink
+		package_zink
 	else
 		compile_mesa "$variant"
 		package_zip "$variant" "$suffix" "$label"
 	fi
 }
 
-compile_mesa(){
-	local variant="$1"
-	builddir="$workdir/build-$variant"
-	installdir="$workdir/install-$variant"
-	rm -rf "$builddir" "$installdir"
-
+# NDK clang, cross file for aarch64 Android and a native file for the host
+# tools Mesa builds. Shared by the android and zink targets.
+setup_android_toolchain(){
 	# Clang from the NDK is also used for the host tools Mesa builds.
 	mkdir -p "$workdir/bin"
 	ln -sf "$ndk/clang" "$workdir/bin/cc"
@@ -377,6 +395,15 @@ cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 EOF
+}
+
+compile_mesa(){
+	local variant="$1"
+	builddir="$workdir/build-$variant"
+	installdir="$workdir/install-$variant"
+	rm -rf "$builddir" "$installdir"
+
+	setup_android_toolchain
 
 	echo "Configuring ..."
 	(cd "$srcdir" && meson setup "$builddir" \
@@ -401,6 +428,136 @@ EOF
 	ninja -C "$builddir" install
 
 	[ -f "$installdir/lib/libvulkan_freedreno.so" ] || die "build failed, libvulkan_freedreno.so not found"
+}
+
+compile_zink(){
+	builddir="$workdir/build-zink"
+	installdir="$workdir/install-zink"
+	rm -rf "$builddir" "$installdir"
+
+	setup_android_toolchain
+
+	# Zink only: no Vulkan driver (the launcher supplies Turnip through
+	# libvulkan.so) and no LLVM. libdrm comes from Mesa's wrap, because the
+	# NDK has none and EGL needs it.
+	echo "Configuring Zink ..."
+	(cd "$srcdir" && meson setup "$builddir" \
+		--cross-file "$workdir/android-aarch64.txt" \
+		--native-file "$workdir/native.txt" \
+		--prefix "$installdir" \
+		-Dbuildtype=release \
+		-Db_lto=false \
+		-Dstrip=true \
+		-Dplatforms=android \
+		-Dvideo-codecs= \
+		-Dplatform-sdk-version="$platform_sdkver" \
+		-Dandroid-stub=true \
+		-Dandroid-libbacktrace=disabled \
+		-Dgallium-drivers=zink \
+		-Dvulkan-drivers= \
+		-Dopengl=true \
+		-Degl=enabled \
+		-Degl-lib-suffix=_mesa \
+		-Dgles-lib-suffix=_mesa \
+		-Dgles1=disabled \
+		-Dgles2=enabled \
+		-Dglx=disabled \
+		-Dgbm=disabled \
+		-Dllvm=disabled \
+		-Dxmlconfig=disabled \
+		-Dzstd=disabled \
+		-Dallow-fallback-for=libdrm)
+
+	echo "Compiling Zink ..."
+	ninja -C "$builddir" install
+}
+
+# Packs libEGL_mesa.so + libgallium_dri.so (+ libdrm.so) the way
+# MojoLauncher loads them: unversioned file names that match their SONAMEs,
+# and no dependency outside the zip except ZINK_SYSTEM_LIBS.
+package_zink(){
+	command -v patchelf >/dev/null 2>&1 || die "patchelf is required for the zink package"
+	local pkg="$workdir/pkg-zink" zipname="Zink-$BUILD_VERSION.zip"
+	rm -rf "$pkg"
+	mkdir -p "$pkg"
+
+	local f
+	find_lib(){
+		find "$installdir" -name "$1" \( -type f -o -type l \) | sort | head -n 1
+	}
+
+	# Which files go in, and the name each gets inside the zip.
+	local -a libs=(libEGL_mesa.so libgallium_dri.so)
+	local name src
+	for name in "${libs[@]}"; do
+		src="$(find_lib "$name*")"
+		[ -n "$src" ] || die "$name not found in $installdir"
+		cp -L "$src" "$pkg/$name"
+	done
+
+	# Pull in anything they need that we built ourselves (libdrm, libglapi, ...).
+	local changed=1 dep base
+	while [ "$changed" = 1 ]; do
+		changed=0
+		for f in "$pkg"/*.so; do
+			for dep in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+				base="${dep%%.so*}.so"
+				[ -f "$pkg/$base" ] && continue
+				case " $ZINK_SYSTEM_LIBS " in *" $base "*) continue ;; esac
+				src="$(find_lib "$base*")"
+				[ -n "$src" ] || continue
+				cp -L "$src" "$pkg/$base"
+				changed=1
+			done
+		done
+	done
+
+	# Unversion SONAMEs and NEEDED entries (libdrm.so.2 -> libdrm.so).
+	for f in "$pkg"/*.so; do
+		patchelf --set-soname "$(basename "$f")" "$f"
+		for dep in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+			base="${dep%%.so*}.so"
+			if [ "$dep" != "$base" ] && [ -f "$pkg/$base" ]; then
+				patchelf --replace-needed "$dep" "$base" "$f"
+			fi
+		done
+	done
+
+	# Every remaining dependency must be in the zip or on every phone.
+	local bad=""
+	for f in "$pkg"/*.so; do
+		for dep in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+			[ -f "$pkg/$dep" ] && continue
+			case " $ZINK_SYSTEM_LIBS " in *" $dep "*) continue ;; esac
+			bad="$bad $(basename "$f")->$dep"
+		done
+	done
+	[ -z "$bad" ] || warn "Zink needs libraries outside ZINK_SYSTEM_LIBS (check they load on the phone):$bad"
+
+	local mesa_short="${MESA_VERSION%%-*}"
+	cat <<EOF >"$pkg/meta.json"
+{
+  "schemaVersion": 1,
+  "name": "Zink $mesa_short ($BUILD_VERSION)",
+  "description": "Mesa Zink (OpenGL on Vulkan), Mesa ${MESA_COMMIT:0:10}",
+  "author": "$DRIVER_AUTHOR",
+  "driverVersion": "Mesa $MESA_VERSION",
+  "minApi": 29,
+  "libraryName": "libEGL_mesa.so"
+}
+EOF
+
+	{
+		echo "Files:"
+		for f in "$pkg"/*.so; do
+			echo "  $(basename "$f")  SONAME=$(readelf -d "$f" | sed -n 's/.*(SONAME).*\[\(.*\)\]/\1/p')"
+			echo "    NEEDED: $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tr '\n' ' ')"
+		done
+	} | tee "$OUT_DIR/zink-libs.txt"
+
+	(cd "$pkg" && zip -q -j "$OUT_DIR/$zipname" ./*.so meta.json)
+	[ -f "$OUT_DIR/$zipname" ] || die "failed to pack $zipname"
+	info "Created $OUT_DIR/$zipname"
 }
 
 package_zip(){

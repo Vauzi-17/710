@@ -22,12 +22,17 @@ on:
         type: string
         default: 'main'
       variants:
-        description: '"all" = standard build + every patches/variants/* folder, or e.g. "base" / "base lf"'
+        description: '"all" = standard build + every patches/variants/* folder, e.g. "base" / "base lf", or "none" for no Turnip build'
         required: false
         type: string
         default: 'all'
       glibc:
         description: 'Also build the experimental glibc (Winlator) .tzst'
+        required: false
+        type: boolean
+        default: false
+      zink:
+        description: 'Also build Zink (libEGL_mesa.so + libgallium_dri.so) for MojoLauncher, artifact only'
         required: false
         type: boolean
         default: false
@@ -156,7 +161,7 @@ jobs:
 
   android:
     needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
+    if: needs.prepare.outputs.skip != 'true' && inputs.variants != 'none'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -208,6 +213,70 @@ jobs:
         path: |
           out/
           build-android.log
+        if-no-files-found: error
+
+  zink:
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.zink
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: zink
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      NDK_VERSION: android-ndk-r29
+      # The runner image sets ANDROID_NDK_HOME to its own NDK; clear it so
+      # the build always uses NDK_VERSION.
+      ANDROID_NDK_HOME: ''
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache zip unzip pkg-config patchelf python3-pip
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: turnip_workdir/${{ env.NDK_VERSION }}
+        key: ndk-${{ env.NDK_VERSION }}
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-zink-${{ github.run_id }}
+        restore-keys: ccache-zink-
+
+    - name: Execute build script
+      run: bash ./turnip_builder.sh 2>&1 | tee build-zink.log
+
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo "### Zink build"
+          if [ -f out/build-info.env ]; then grep -E '^(MESA_COMMIT|MESA_VERSION)=' out/build-info.env | sed 's/^/- /'; fi
+          echo
+          if [ -f out/zink-libs.txt ]; then echo '```'; cat out/zink-libs.txt; echo '```'; fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zink-android
+        path: |
+          out/
+          build-zink.log
         if-no-files-found: error
 
   glibc:
