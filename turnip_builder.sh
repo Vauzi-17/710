@@ -75,6 +75,14 @@ GLIBC_EXTRA_LIBS="${GLIBC_EXTRA_LIBS-libxcb-xfixes.so.0}"
 # because such a driver does not load (VK_ERROR_INCOMPATIBLE_DRIVER).
 GLIBC_ROOTFS_LIBS="${GLIBC_ROOTFS_LIBS-libz.so.1 libdrm.so.2 libxcb.so.1 libX11-xcb.so.1 libxcb-dri3.so.0 libxcb-present.so.0 libxcb-randr.so.0 libxcb-shm.so.0 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6 ld-linux-aarch64.so.1}"
 
+# CPU-side tuning for the Android builds (idea from turnip-sd865-z, change 4).
+# Only the code that runs on the CPU (command recording, shader compiler) is
+# affected. armv8.2-a runs on every core in the 710/720/722 SoCs (A55, A78,
+# A510, A715); the tuning target is Cortex-A78. Set ANDROID_CPU_FLAGS= and
+# ANDROID_LTO=false for a plain build.
+ANDROID_CPU_FLAGS="${ANDROID_CPU_FLAGS--march=armv8.2-a -mtune=cortex-a78 -fno-plt}"
+ANDROID_LTO="${ANDROID_LTO:-thin}"
+
 # The API level the NDK compiler targets, and the one Mesa is configured for.
 sdkver="34"
 platform_sdkver="36"
@@ -388,6 +396,23 @@ cpu = 'armv8'
 endian = 'little'
 EOF
 
+	if [ -n "$ANDROID_CPU_FLAGS" ]; then
+		local flags="" f
+		for f in $ANDROID_CPU_FLAGS; do flags="$flags'$f', "; done
+		cat <<EOF >>"$workdir/android-aarch64.txt"
+
+[built-in options]
+c_args = [${flags%, }]
+cpp_args = [${flags%, }]
+EOF
+	fi
+
+	lto_args=(-Db_lto=false)
+	if [ "$ANDROID_LTO" = "thin" ] || [ "$ANDROID_LTO" = "full" ]; then
+		lto_args=(-Db_lto=true -Db_lto_mode="$( [ "$ANDROID_LTO" = thin ] && echo thin || echo default )")
+	fi
+	echo "CPU flags: ${ANDROID_CPU_FLAGS:-none}, LTO: $ANDROID_LTO"
+
 	cat <<EOF >"$workdir/native.txt"
 [build_machine]
 c = [${cc_prefix}'clang']
@@ -417,7 +442,7 @@ compile_mesa(){
 		--native-file "$workdir/native.txt" \
 		--prefix "$installdir" \
 		-Dbuildtype=release \
-		-Db_lto=false \
+		"${lto_args[@]}" \
 		-Dstrip=true \
 		-Dplatforms=android \
 		-Dvideo-codecs= \
@@ -452,7 +477,7 @@ compile_zink(){
 		--native-file "$workdir/native.txt" \
 		--prefix "$installdir" \
 		-Dbuildtype=release \
-		-Db_lto=false \
+		"${lto_args[@]}" \
 		-Dstrip=true \
 		-Dplatforms=android \
 		-Dvideo-codecs= \
