@@ -78,10 +78,11 @@ GLIBC_ROOTFS_LIBS="${GLIBC_ROOTFS_LIBS-libz.so.1 libdrm.so.2 libxcb.so.1 libX11-
 # CPU-side tuning for the Android builds (idea from turnip-sd865-z, change 4).
 # Only the code that runs on the CPU (command recording, shader compiler) is
 # affected. armv8.2-a runs on every core in the 710/720/722 SoCs (A55, A78,
-# A510, A715); the tuning target is Cortex-A78. Set ANDROID_CPU_FLAGS= and
-# ANDROID_LTO=false for a plain build.
+# A510, A715); the tuning target is Cortex-A78. Set ANDROID_CPU_FLAGS= for a
+# plain build. LTO stays off by default: Mesa's meson.build refuses it
+# ("Building Mesa with LTO is not supported").
 ANDROID_CPU_FLAGS="${ANDROID_CPU_FLAGS--march=armv8.2-a -mtune=cortex-a78 -fno-plt}"
-ANDROID_LTO="${ANDROID_LTO:-thin}"
+ANDROID_LTO="${ANDROID_LTO:-false}"
 
 # The API level the NDK compiler targets, and the one Mesa is configured for.
 sdkver="34"
