@@ -72,3 +72,11 @@ BUILD_VERSION=test PATCH_ONLY=1 BUILD_TARGET=glibc bash turnip_builder.sh   # in
 
 This clones Mesa and applies everything, then stops before downloading the
 NDK or compiling.
+
+## Built-in default environment variables
+
+`default_env.conf` lists variables (`NAME=VALUE`, one per line) that
+`20-default-env.py` builds into the driver. They are applied when the
+driver loads, for emulators and launchers without an environment-variable
+setting. Anything the app sets, or a `debug.mesa.*` property, still wins.
+Leave the file without entries to turn this off.
