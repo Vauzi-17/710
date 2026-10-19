@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Turnip-Z port: keep MUTABLE_FORMAT images tiled on GPUs without
+"""Turnip-Z port: keep MUTABLE_FORMAT images tiled (and UBWC) on GPUs without
 ubwc_all_formats_compatible (a6xx, a7xx gen1/gen2 such as FD710).
 
-Env TU_Z_MUTABLE (default 1):
+Env TU_Z_MUTABLE (default 2):
   0  upstream behavior (linear + no UBWC when the format list has swaps)
-  1  stay tiled, UBWC off (default: safe, keeps the tiling gain)
-  2  stay tiled, UBWC kept (= Turnip-Z's default, but corrupts reinterpreted
-     surfaces here; the fork has a companion that we have not reproduced)
+  1  stay tiled, UBWC off
+  2  stay tiled, UBWC kept (Turnip-Z default)
 R8G8<->R16 reinterpretation always falls back to linear, as upstream.
 
 Run from the Mesa source root. All edits are applied or none.
@@ -22,7 +21,7 @@ EDITS = [
      '#include "tu_wsi.h"\n',
      '#include "tu_wsi.h"\n'
      '\n'
-     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", 1)\n',
+     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", 2)\n',
      1),
     (IMAGE,
      '         } else if (!mutable_ubwc_fc) {\n'
@@ -60,7 +59,7 @@ def main():
     for path, s in files.items():
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(s)
-    print(f"{NAME}: applied (TU_Z_MUTABLE, default 1)")
+    print(f"{NAME}: applied (TU_Z_MUTABLE, default 2)")
     return 0
 
 
