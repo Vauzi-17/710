@@ -23,9 +23,9 @@ IMAGE = "src/freedreno/vulkan/tu_image.cc"
 
 EDITS = [
     (IMAGE,
-     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", 2)\n',
-     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", 2)\n'
-     'DEBUG_GET_ONCE_BOOL_OPTION(tu_z_mutable_swap, "TU_Z_MUTABLE_SWAP", true)\n',
+     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", ',
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_z_mutable_swap, "TU_Z_MUTABLE_SWAP", true)\n'
+     'DEBUG_GET_ONCE_NUM_OPTION(tu_z_mutable, "TU_Z_MUTABLE", ',
      1),
     (IMAGE,
      '            if (r8g8_r16 || (fmt_list_has_swaps && z_mutable < 1)) {\n'
