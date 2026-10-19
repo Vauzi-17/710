@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Turnip-Z port: make the Z-MUTABLE tiled/UBWC decision colour-safe.
+
+30-tu-z-mutable.py keeps MUTABLE_FORMAT images tiled (+UBWC) even when their
+format list mixes swapped and unswapped formats. The fork only ever fixes
+B8G8R8A8 (swap WXYZ) on that path; every other swapped format (B5G6R5/B5G6R5R,
+B4G4R4A4, A1B5G5R5, R10G10B10A2, ...) is left with the upstream "tiled ->
+WZYX" swap, so those surfaces show swapped/incorrect colours. Keeping UBWC on
+a list whose formats have different UBWC classes can corrupt them too.
+
+This patch makes the keep-tiled path depend on what the list actually contains:
+
+  * list reinterprets R8G8<->R16      -> linear (as 30/upstream)
+  * list has swaps, some not BGRA8    -> linear (upstream; the fork cannot fix these)
+  * list has swaps, all BGRA8 only    -> stay tiled, UBWC off (33 fixes the swap)
+  * list has no swaps                 -> stay tiled, UBWC kept (as 30)
+
+So the BGRA8 speed-up is kept, and any case the fork would render wrong falls
+back to the upstream-correct linear layout instead.
+
+Needs 30-tu-z-mutable.py applied first (it anchors on its code), and
+33-tu-z-bgra-swap.py for the BGRA8 swap itself.
+Env: none (compiled default). Run from the Mesa source root; all edits or none.
+"""
+import sys
+
+NAME = "35-tu-z-mutable-safe.py"
+MARKER = "swaps_all_bgra8"
+IMAGE = "src/freedreno/vulkan/tu_image.cc"
+
+EDITS = [
+    (IMAGE,
+     '            if (r8g8_r16 || (fmt_list_has_swaps && z_mutable < 1)) {\n'
+     '               ubwc_enabled = false;\n'
+     '               force_linear_tile = true;\n'
+     '            }\n',
+     '            bool swaps_all_bgra8 = true;\n'
+     '            if (fmt_list && fmt_list->viewFormatCount) {\n'
+     '               for (uint32_t i = 0; i < fmt_list->viewFormatCount; i++) {\n'
+     '                  enum pipe_format f =\n'
+     '                     vk_format_to_pipe_format(fmt_list->pViewFormats[i]);\n'
+     '                  if (tu6_format_texture(f, TILE6_LINEAR, false).swap &&\n'
+     '                      f != PIPE_FORMAT_B8G8R8A8_UNORM &&\n'
+     '                      f != PIPE_FORMAT_B8G8R8A8_SRGB) {\n'
+     '                     swaps_all_bgra8 = false;\n'
+     '                     break;\n'
+     '                  }\n'
+     '               }\n'
+     '            }\n'
+     '\n'
+     '            if (r8g8_r16 || (fmt_list_has_swaps && !swaps_all_bgra8)) {\n'
+     '               ubwc_enabled = false;\n'
+     '               force_linear_tile = true;\n'
+     '            } else if (fmt_list_has_swaps) {\n'
+     '               ubwc_enabled = false;\n'
+     '            }\n',
+     1),
+]
+
+
+def main():
+    files = {}
+    for path, _, _, _ in EDITS:
+        if path not in files:
+            try:
+                files[path] = open(path, encoding="utf-8").read()
+            except OSError as e:
+                print(f"{NAME}: WARNING cannot read {path}: {e}; skipped")
+                return 0
+    if any(MARKER in s for s in files.values()):
+        print(f"{NAME}: already applied")
+        return 0
+    for path, old, new, count in EDITS:
+        found = files[path].count(old)
+        if found != count:
+            print(f"{NAME}: WARNING anchor matched {found}x (want {count}) in {path}; "
+                  f"needs 30-tu-z-mutable.py first, patch skipped")
+            return 0
+        files[path] = files[path].replace(old, new)
+    for path, s in files.items():
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(s)
+    print(f"{NAME}: applied (swapped lists -> linear unless all-BGRA8)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
