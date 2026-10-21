@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Turnip-Z port: keep MUTABLE_FORMAT images tiled (and UBWC) on GPUs without
-ubwc_all_formats_compatible (a6xx, a7xx gen1/gen2 such as FD710).
+"""Turnip-Z port: keep MUTABLE_FORMAT images tiled (and UBWC) on all GPUs
+including A6xx, A7xx (FD710) and A8xx (FD810/A830/A840).
 
 Env TU_Z_MUTABLE (default 2):
   0  upstream behavior (linear + no UBWC when the format list has swaps)
   1  stay tiled, UBWC off
-  2  stay tiled, UBWC kept (Turnip-Z default)
+  2  stay tiled, UBWC kept (Turnip-Z default, both for !mutable_ubwc_fc and mutable_ubwc_fc)
 R8G8<->R16 reinterpretation always falls back to linear, as upstream.
 
 Run from the Mesa source root. All edits are applied or none.
@@ -34,6 +34,19 @@ EDITS = [
      '            if (r8g8_r16 || fmt_list_has_swaps) {\n',
      '            if (r8g8_r16 || (fmt_list_has_swaps && z_mutable < 1)) {\n',
      1),
+    (IMAGE,
+     '         } else {\n'
+     '            is_mutable = true;\n'
+     '            if (!format_list_ubwc_possible(device, fmt_list, pCreateInfo))\n'
+     '               ubwc_enabled = false;\n'
+     '         }\n',
+     '         } else {\n'
+     '            is_mutable = true;\n'
+     '            int64_t z_mutable = debug_get_option_tu_z_mutable();\n'
+     '            if (z_mutable < 2 && !format_list_ubwc_possible(device, fmt_list, pCreateInfo))\n'
+     '               ubwc_enabled = false;\n'
+     '         }\n',
+     1),
 ]
 
 
@@ -59,7 +72,7 @@ def main():
     for path, s in files.items():
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(s)
-    print(f"{NAME}: applied (TU_Z_MUTABLE, default 2)")
+    print(f"{NAME}: applied (TU_Z_MUTABLE, default 2, covers A8xx/A7xx)")
     return 0
 
 
