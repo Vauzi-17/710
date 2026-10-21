@@ -35,7 +35,12 @@ tu_lrz_z_rescue_clear(struct tu_cmd_buffer *cmd,
    struct tu_lrz_state *lrz = &cmd->state.lrz;
    const struct tu_image_view *view = lrz->image_view;
 
-   if (!debug_get_option_tu_z_lrz_rescue() || !TU_DEBUG(SYSMEM) ||
+   static int z_sysmem = -1;
+   if (z_sysmem < 0)
+      z_sysmem = debug_get_bool_option("TU_Z_SYSMEM_ONLY", true);
+
+   if (!debug_get_option_tu_z_lrz_rescue() ||
+       (!TU_DEBUG(SYSMEM) && !z_sysmem) ||
        TU_DEBUG(NOLRZ) || TU_DEBUG(NOLRZFC))
       return false;
 
