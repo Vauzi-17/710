@@ -81,11 +81,12 @@ GLIBC_ROOTFS_LIBS="${GLIBC_ROOTFS_LIBS-libz.so.1 libdrm.so.2 libxcb.so.1 libX11-
 # A510, A715); the tuning target is Cortex-A78. Set ANDROID_CPU_FLAGS= for a
 # plain build. LTO stays off by default: Mesa's meson.build refuses it
 # ("Building Mesa with LTO is not supported").
-ANDROID_CPU_FLAGS="${ANDROID_CPU_FLAGS--march=armv8.2-a -mtune=cortex-a78 -fno-plt}"
+ANDROID_CPU_FLAGS="${ANDROID_CPU_FLAGS-}"
 ANDROID_LTO="${ANDROID_LTO:-false}"
 
 # The API level the NDK compiler targets, and the one Mesa is configured for.
-sdkver="34"
+sdkver="36"
+cver="36"
 platform_sdkver="36"
 
 # Libraries MojoLauncher's own Mesa build needs from the phone. The zink build
@@ -93,10 +94,10 @@ platform_sdkver="36"
 ZINK_SYSTEM_LIBS="${ZINK_SYSTEM_LIBS-libc.so libm.so libdl.so liblog.so libz.so libsync.so libnativewindow.so libhardware.so}"
 
 # meta.json fields
-DRIVER_NAME="${DRIVER_NAME:-710 720 & 722}"
-DRIVER_DESCRIPTION="${DRIVER_DESCRIPTION:-Turnip driver for Adreno 710/720/722}"
+DRIVER_NAME="${DRIVER_NAME:-Turnip Gen8 + 7xx}"
+DRIVER_DESCRIPTION="${DRIVER_DESCRIPTION:-Turnip driver with Gen8 stack, WinNative patches, and Adreno 710/720 optimizations}"
 DRIVER_AUTHOR="${DRIVER_AUTHOR:-vauzi}"
-ZIP_PREFIX="${ZIP_PREFIX:-Turnip-710-720-722}"
+ZIP_PREFIX="${ZIP_PREFIX:-Turnip-Gen8-7xx}"
 
 info(){ echo -e "${green}$*${nocolor}"; }
 warn(){
@@ -189,8 +190,12 @@ prepare_ndk(){
 		fi
 	fi
 	ndk="$ndkroot/toolchains/llvm/prebuilt/linux-x86_64/bin"
-	[ -x "$ndk/aarch64-linux-android$sdkver-clang" ] || die "NDK compiler not found in $ndk"
-	echo "NDK_VERSION=$(basename "$ndkroot")" > "$OUT_DIR/android-info.env"
+	cver="36"
+	[ -f "$ndk/aarch64-linux-android${cver}-clang" ] || cver="35"
+	[ -f "$ndk/aarch64-linux-android${cver}-clang" ] || cver="34"
+	[ -x "$ndk/aarch64-linux-android${cver}-clang" ] || die "NDK compiler not found in $ndk"
+	sdkver="$cver"
+	echo "NDK_VERSION=$(basename "$ndkroot"), compiler=android${cver}" > "$OUT_DIR/android-info.env"
 }
 
 clone_mesa(){
@@ -307,6 +312,15 @@ apply_patch_dir(){
 	done
 }
 
+apply_android_ndk_fixes(){
+	info "Applying Android/NDK fixes..."
+	sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void* buffer_handle_t;/g' "$srcdir/include/android_stub/cutils/native_handle.h" 2>/dev/null || true
+	sed -i 's/, hnd->handle/, (void *)hnd->handle/g' "$srcdir/src/util/u_gralloc/u_gralloc_fallback.c" 2>/dev/null || true
+	sed -i -E 's/([a-z_]+)->handle->/((const native_handle_t *)\1->handle)->/g' "$srcdir/src/vulkan/runtime/vk_android.c" 2>/dev/null || true
+	sed -i 's/anb->handle->/((const native_handle_t *)anb->handle)->/g' "$srcdir/src/vulkan/runtime/vk_android.c" 2>/dev/null || true
+	sed -i "/-Werror=gnu-empty-initializer/d" "$srcdir/meson.build" 2>/dev/null || true
+}
+
 build_variant(){
 	local variant="$1"
 	local suffix="" label=""
@@ -350,9 +364,11 @@ build_variant(){
 		compile_glibc "$variant"
 		package_tzst "$variant" "$suffix"
 	elif [ "$BUILD_TARGET" = "zink" ]; then
+		apply_android_ndk_fixes
 		compile_zink
 		package_zink
 	else
+		apply_android_ndk_fixes
 		compile_mesa "$variant"
 		package_zip "$variant" "$suffix" "$label"
 	fi
@@ -374,6 +390,8 @@ setup_android_toolchain(){
 	export OBJDUMP=llvm-objdump
 	export OBJCOPY=llvm-objcopy
 	export LDFLAGS="-fuse-ld=lld"
+	export CFLAGS="-D__ANDROID__ -Wno-error -Wno-error=gnu-empty-initializer -Wno-gnu-empty-initializer -Wno-deprecated-declarations -Wno-incompatible-pointer-types-discards-qualifiers -Wno-incompatible-pointer-types"
+	export CXXFLAGS="-D__ANDROID__ -Wno-error -Wno-error=gnu-empty-initializer -Wno-gnu-empty-initializer -Wno-deprecated-declarations -Wno-incompatible-pointer-types-discards-qualifiers -Wno-incompatible-pointer-types"
 
 	local cc_prefix=""
 	if command -v ccache >/dev/null 2>&1; then
@@ -383,8 +401,8 @@ setup_android_toolchain(){
 	cat <<EOF >"$workdir/android-aarch64.txt"
 [binaries]
 ar = '$ndk/llvm-ar'
-c = [${cc_prefix}'$ndk/aarch64-linux-android$sdkver-clang']
-cpp = [${cc_prefix}'$ndk/aarch64-linux-android$sdkver-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
+c = [${cc_prefix}'$ndk/aarch64-linux-android${cver}-clang']
+cpp = [${cc_prefix}'$ndk/aarch64-linux-android${cver}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
 c_ld = '$ndk/ld.lld'
 cpp_ld = '$ndk/ld.lld'
 strip = '$ndk/llvm-strip'
