@@ -94,10 +94,10 @@ platform_sdkver="36"
 ZINK_SYSTEM_LIBS="${ZINK_SYSTEM_LIBS-libc.so libm.so libdl.so liblog.so libz.so libsync.so libnativewindow.so libhardware.so}"
 
 # meta.json fields
-DRIVER_NAME="${DRIVER_NAME:-Turnip Gen8 + 7xx}"
-DRIVER_DESCRIPTION="${DRIVER_DESCRIPTION:-Turnip driver with Gen8 stack, WinNative patches, and Adreno 710/720 optimizations}"
+DRIVER_NAME="${DRIVER_NAME:-710 720 & 722}"
+DRIVER_DESCRIPTION="${DRIVER_DESCRIPTION:-Turnip driver for Adreno 710/720/722}"
 DRIVER_AUTHOR="${DRIVER_AUTHOR:-vauzi}"
-ZIP_PREFIX="${ZIP_PREFIX:-Turnip-Gen8-7xx}"
+ZIP_PREFIX="${ZIP_PREFIX:-Turnip-710-720-722}"
 
 info(){ echo -e "${green}$*${nocolor}"; }
 warn(){
