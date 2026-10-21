@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """FD810: perbaikan terpadu Adreno 810 dari analisis blob A810 (V@0800.74).
 
-Memperbaiki masalah fatal layar hitam (black screen dengan suara game):
+Memperbaiki masalah fatal layar hitam dan optimalisasi performa Sysmem:
 1. Fix Sysmem CCU Buffer Underflow: GMEM A810 hanya 576 KB (0x90000). Nilai default
    a8xx_gen1 meminta total 608 KB (bv 32K + attr 128K + pos 64K + color 128K + depth 256K),
    menyebabkan depth_ccu_offset underflow ke 0xFFFF8000 (-32K) dan merusak flush frame.
    Disesuaikan dengan ukuran blob sysmem: attr 32K, pos 12K, bv 20K (total 448 KB < 576 KB).
-2. Hapus disable_gmem = True: blob 810 terbukti memakai GMEM binning (test-lrz, test-query, test-tf).
-3. SP_UNKNOWN_AB01: setel ke 0x00000001 (100% capture blob 810 menulis 0x1 di amble1 preamble).
-4. VSC_UNKNOWN_0D08: setel ke 1 saat binning setup (sesuai blob 810).
-5. KGSL chip_id 0x44010000: pastikan terdaftar bersama fallback 0xffff44010000.
+2. Alignment Sysmem CCU & VPC Layout: Selaraskan offset GMEM sysmem dengan trace proprietary
+   blob A810 (color_ccu 0x6d000, depth_ccu 0x0d000, vpc_attr 0x05000, vpc_pos 0x8d000,
+   vpc_bv_pos 0x00000) untuk meminimalkan CCU cache bank conflict dan unneeded DRAM flushes.
+3. Hapus disable_gmem = True: blob 810 terbukti memakai GMEM binning (test-lrz, test-query, test-tf).
+4. SP_UNKNOWN_AB01: setel ke 0x00000001 (100% capture blob 810 menulis 0x1 di amble1 preamble).
+5. VSC_UNKNOWN_0D08: setel ke 1 saat binning setup (sesuai blob 810).
+6. KGSL chip_id 0x44010000: pastikan terdaftar bersama fallback 0xffff44010000.
 
 Dijalankan dari root direktori Mesa. Idempoten dan aman dijalankan berulang kali.
 """
 import sys
 
 NAME = "51-fd810-blob.py"
-SUMMARY = "FD810 blob: fix sysmem underflow, remove disable_gmem, ab01=1, vsc_0d08=1, chip_id=0x44010000"
+SUMMARY = "FD810 blob: fix sysmem underflow & align CCU/VPC offsets (0x6d000/0xd000), remove disable_gmem, ab01=1, vsc_0d08=1, chip_id=0x44010000"
 
-DEV_INFO = "src/freedreno/common/freedreno_dev_info.h"
-CMD_BUF  = "src/freedreno/vulkan/tu_cmd_buffer.cc"
-DEVICES  = "src/freedreno/common/freedreno_devices.py"
+DEV_INFO   = "src/freedreno/common/freedreno_dev_info.h"
+CMD_BUF    = "src/freedreno/vulkan/tu_cmd_buffer.cc"
+DEVICES    = "src/freedreno/common/freedreno_devices.py"
+GMEM_CACHE = "src/freedreno/common/fd6_gmem_cache.h"
 
 
 def apply_dev_info(s):
@@ -150,11 +154,36 @@ def apply_devices(s):
     return s, None
 
 
+def apply_gmem_cache(s):
+    marker = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */"
+    if marker in s:
+        return s, None
+
+    anchor = "      __calc_gmem_cache_offsets(info, gmemsize_bytes, sysmem);\n"
+    if s.count(anchor) != 1:
+        return None, "cannot find __calc_gmem_cache_offsets anchor in fd6_gmem_cache.h"
+
+    insert = (
+        "      __calc_gmem_cache_offsets(info, gmemsize_bytes, sysmem);\n"
+        "      if (info->num_ccu == 1 && gmemsize_bytes == 576 * 1024) {\n"
+        "         /* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */\n"
+        "         sysmem->vpc_bv_pos_buf_offset = 0x00000;\n"
+        "         sysmem->vpc_attr_buf_offset   = 0x05000;\n"
+        "         sysmem->depth_ccu_offset      = 0x0d000;\n"
+        "         sysmem->color_ccu_offset      = 0x6d000;\n"
+        "         sysmem->vpc_pos_buf_offset    = 0x8d000;\n"
+        "      }\n"
+    )
+    s = s.replace(anchor, insert, 1)
+    return s, None
+
+
 def main():
     try:
-        dev_info_src = open(DEV_INFO, encoding="utf-8").read()
-        cmd_buf_src  = open(CMD_BUF, encoding="utf-8").read()
-        devices_src  = open(DEVICES, encoding="utf-8").read()
+        dev_info_src   = open(DEV_INFO, encoding="utf-8").read()
+        cmd_buf_src    = open(CMD_BUF, encoding="utf-8").read()
+        devices_src    = open(DEVICES, encoding="utf-8").read()
+        gmem_cache_src = open(GMEM_CACHE, encoding="utf-8").read()
     except OSError as e:
         print(f"{NAME}: WARNING cannot read source files: {e}; skipped")
         return 0
@@ -164,7 +193,9 @@ def main():
     has_a810_chip = "GPUId(chip_id=0x44010000" in devices_src
     has_no_disable_gmem = "disable_gmem = True" not in devices_src[devices_src.find("Adreno (TM) 810"):devices_src.find("Adreno (TM) 810") + 800]
     has_vsc = "vsc_unknown_0d08 = 1" in devices_src
-    already_done = has_a810_magic and has_a810_sysmem and has_a810_chip and has_no_disable_gmem and has_vsc
+    has_gmem_cache = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */" in gmem_cache_src
+    already_done = (has_a810_magic and has_a810_sysmem and has_a810_chip and
+                    has_no_disable_gmem and has_vsc and has_gmem_cache)
 
     if already_done:
         print(f"{NAME}: already applied")
@@ -185,12 +216,19 @@ def main():
         print(f"{NAME}: WARNING {err}; patch skipped")
         return 0
 
+    new_gmem_cache, err = apply_gmem_cache(gmem_cache_src)
+    if err:
+        print(f"{NAME}: WARNING {err}; patch skipped")
+        return 0
+
     with open(DEV_INFO, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_dev_info)
     with open(CMD_BUF, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_cmd_buf)
     with open(DEVICES, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_devices)
+    with open(GMEM_CACHE, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_gmem_cache)
 
     print(f"{NAME}: applied ({SUMMARY})")
     return 0
