@@ -397,7 +397,7 @@ index 12c21f1e..767c7f28 100644
  static void
  get_device_extensions(const struct tu_physical_device *device,
                        struct vk_device_extension_table *ext)
-@@ -1128,16 +1138,16 @@ static void
+@@ -1128,15 +1138,15 @@ static void
  tu_get_physical_device_properties_1_3(struct tu_physical_device *pdevice,
                                        struct vk_properties *p)
  {
@@ -418,8 +418,7 @@ index 12c21f1e..767c7f28 100644
 -      p->minSubgroupSize == p->maxSubgroupSize
 +      !pdevice->expose_double_threadsize
           ? VK_SHADER_STAGE_ALL
-          : (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-             VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT);
+          : (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
 index 569bf613..d314496f 100644
 --- a/src/freedreno/vulkan/tu_pipeline.cc
