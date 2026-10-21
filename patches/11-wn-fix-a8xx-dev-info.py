@@ -28,24 +28,10 @@ def fix_dev_info():
         content = f.read()
 
     if "bool disable_gmem;" in content:
-        # Check if has_image_processing is a duplicate (appears more than once)
-        count = content.count("has_image_processing")
-        if count <= 1:
-            print(f"{DEV_INFO_H}: disable_gmem already present, nothing to do.")
-            return
-        # Reset and re-add cleanly
-        print(f"{DEV_INFO_H}: duplicate has_image_processing detected — resetting and re-adding disable_gmem only")
-    else:
-        print(f"{DEV_INFO_H}: disable_gmem missing — adding it")
+        print(f"{DEV_INFO_H}: disable_gmem already present, nothing to do.")
+        return
 
-    # Reset the file to pristine Mesa state
-    result = subprocess.run(["git", "checkout", "--", DEV_INFO_H])
-    if result.returncode != 0:
-        print(f"ERROR: git checkout {DEV_INFO_H} failed", file=sys.stderr)
-        sys.exit(1)
-
-    with open(DEV_INFO_H, "r") as f:
-        content = f.read()
+    print(f"{DEV_INFO_H}: disable_gmem missing — adding it")
 
     # Insert disable_gmem after has_image_processing (already in Mesa main)
     # or after has_salu_int_narrowing_quirk if has_image_processing is not present
