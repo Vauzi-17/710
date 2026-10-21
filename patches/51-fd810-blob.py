@@ -16,7 +16,7 @@ Dijalankan dari root direktori Mesa. Idempoten dan aman dijalankan berulang kali
 import sys
 
 NAME = "51-fd810-blob.py"
-SUMMARY = "FD810 blob: fix sysmem underflow, remove disable_gmem, ab01=1, vsc_0d08=1, tex_prefetch=True, chip_id=0x44010000"
+SUMMARY = "FD810 blob: fix sysmem underflow, remove disable_gmem, ab01=1, vsc_0d08=1, chip_id=0x44010000"
 
 DEV_INFO = "src/freedreno/common/freedreno_dev_info.h"
 CMD_BUF  = "src/freedreno/vulkan/tu_cmd_buffer.cc"
@@ -131,7 +131,7 @@ def apply_devices(s):
             sysmem_vpc_pos_buf_size = 12288,
             sysmem_vpc_bv_pos_buf_size = 20480,
             vsc_unknown_0d08 = 1,
-            has_fs_tex_prefetch = True,
+            has_fs_tex_prefetch = False,
         )],
         num_ccu = 1,
         num_slices = 1,
