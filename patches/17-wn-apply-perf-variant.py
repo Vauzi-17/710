@@ -18,8 +18,7 @@ AUTOTUNE_FILE = "src/freedreno/vulkan/tu_autotune.cc"
 
 BUILD_VARIANT = os.environ.get("BUILD_VARIANT", "p2")
 if BUILD_VARIANT not in {"p", "p1", "p2"}:
-    print(f"Unsupported BUILD_VARIANT for perf script: {BUILD_VARIANT}", file=sys.stderr)
-    sys.exit(1)
+    BUILD_VARIANT = "p2"
 
 
 def replace_once(content: str, old: str, new: str, label: str) -> tuple[str, bool]:
