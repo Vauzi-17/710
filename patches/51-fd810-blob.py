@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""FD810: perbaikan terpadu Adreno 810 dari analisis blob Vulkan A810 (V@0800.74).
+"""FD810: unified Adreno 810 hardware tuning from Vulkan blob trace analysis (V@0800.74).
 
-Memperbaiki masalah fatal layar hitam dan optimalisasi arsitektur Turnip Vulkan:
-1. Fix Sysmem CCU Buffer Underflow: GMEM A810 hanya 576 KB (0x90000). Nilai default
-   a8xx_gen1 meminta total 608 KB (bv 32K + attr 128K + pos 64K + color 128K + depth 256K),
-   menyebabkan depth_ccu_offset underflow ke 0xFFFF8000 (-32K) dan merusak flush frame.
-   Disesuaikan dengan ukuran blob Vulkan: attr 48K, pos 16K, bv 20K (total 468 KB < 576 KB).
-2. Alignment Bersih Sysmem & GMEM VPC: Formula native __calc_gmem_cache_offsets() menghasilkan
-   offset yang identik dengan trace driver Vulkan resmi (Sysmem: attr 0x7f000, pos 0x7b000,
+Resolves fatal black screen issues and optimizes Turnip Vulkan architecture for A810:
+1. Fix Sysmem CCU Buffer Underflow: A810 GMEM size is 576 KB (0x90000). Upstream
+   a8xx_gen1 defaults requested 608 KB (bv 32K + attr 128K + pos 64K + color 128K + depth 256K),
+   causing depth_ccu_offset to underflow to 0xFFFF8000 (-32K) and breaking frame flushes.
+   Aligned with Vulkan blob sizes: attr 48K, pos 16K, bv 20K (total 468 KB < 576 KB).
+2. Clean Sysmem & GMEM VPC Alignment: Native __calc_gmem_cache_offsets() formula produces
+   offsets matching official Vulkan blob hardware traces (Sysmem: attr 0x7f000, pos 0x7b000,
    color 0x5b000, depth 0x1b000; GMEM: attr 0x7f000, pos 0x79000, color 0x75000).
-   Tidak memerlukan hardcode manual di fd6_gmem_cache.h.
-3. GMEM VPC Buffer Sizes: Sesuaikan ukuran buffer GMEM binning sesuai trace Vulkan:
-   attr 48K, pos 24K, bv 20K (sebelumnya 16K/12K/20K dari GLES).
-4. Hapus disable_gmem = True: blob 810 terbukti memakai GMEM binning (39+ tes dEQP Vulkan).
-5. SP_UNKNOWN_AB01 = 0: Trace Vulkan menulis 0x0 di seluruh 312 write (nilai 1 adalah khusus GLES).
-   Menggunakan a8xx_base_raw_magic_regs upstream secara konsisten.
-6. VSC_UNKNOWN_0D08 = 1: diaktifkan saat binning setup (sesuai trace Vulkan & GLES 810).
-7. KGSL chip_id 0x44010000: pastikan terdaftar bersama fallback 0xffff44010000.
-8. cs_shared_mem_size: dipatok pada baseline fisik 32 KB untuk 1 CCU.
+   Requires no manual hardcoding in fd6_gmem_cache.h.
+3. GMEM VPC Buffer Sizes: Match Vulkan blob binning buffer sizes:
+   attr 48K, pos 24K, bv 20K (previously 16K/12K/20K from GLES).
+4. Remove disable_gmem = True: A810 blob actively utilizes GMEM binning (verified across 39+ dEQP tests).
+5. SP_UNKNOWN_AB01 = 0: Vulkan blob consistently writes 0x0 across 312 writes (value 1 is GLES-only).
+   Consistently utilizes upstream a8xx_base_raw_magic_regs.
+6. VSC_UNKNOWN_0D08 = 1: Enabled in binning setup (matches A810 Vulkan & GLES traces).
+7. KGSL chip_id 0x44010000: Registered alongside fallback 0xffff44010000.
+8. cs_shared_mem_size: Retains 32 KB baseline for 1 CCU.
 
-Dijalankan dari root direktori Mesa. Idempoten dan aman dijalankan berulang kali.
+Run from the Mesa source root. Idempotent and safe to rerun.
 """
 import sys
 
@@ -36,7 +36,7 @@ def apply_dev_info(s):
     if "uint32_t vsc_unknown_0d08;" in s:
         return s, None
 
-    # Cari anchor untuk menyisipkan vsc_unknown_0d08
+    # Find anchor to insert vsc_unknown_0d08
     anchor = None
     for cand in ("      bool enable_tp_ubwc_flag_hint;\n",
                  "      bool has_image_processing;\n",
@@ -67,7 +67,7 @@ def apply_cmd_buffer(s):
         s = s.replace(old_0d08, new_0d08, 1)
         return s, None
 
-    # Cek format alternatif jika ada
+    # Check alternative format if present
     alt_0d08 = "tu_cs_emit_regs(cs, VSC_UNKNOWN_0D08(CHIP, 0));"
     if alt_0d08 in s:
         s = s.replace(alt_0d08, "tu_cs_emit_regs(cs, VSC_UNKNOWN_0D08(CHIP, cmd->device->physical_device->info->props.vsc_unknown_0d08));", 1)
@@ -77,14 +77,14 @@ def apply_cmd_buffer(s):
 
 
 def apply_devices(s):
-    # Hapus a810_raw_magic_regs jika sempat diinjeksikan sebelumnya (Vulkan memakai a8xx_base_raw_magic_regs)
+    # Remove a810_raw_magic_regs if partially injected (Vulkan uses upstream a8xx_base_raw_magic_regs)
     if "a810_raw_magic_regs = [\n" in s:
         m_start = s.find("a810_raw_magic_regs = [\n")
         m_end = s.find("]\n\n", m_start)
         if m_start != -1 and m_end != -1:
             s = s[:m_start] + s[m_end + 3:]
 
-    # Cari blok add_gpus untuk A810 dan ganti sepenuhnya dengan entri yang benar
+    # Locate add_gpus block for A810 and replace with clean entry
     idx = s.find('Adreno (TM) 810')
     if idx == -1:
         return None, "Adreno (TM) 810 entry not found in freedreno_devices.py"
@@ -101,11 +101,11 @@ def apply_devices(s):
     ], A6xxGPUInfo(
         CHIP.A8XX,
         [a7xx_base, a7xx_gen3, a8xx_base, a8xx_gen1, GPUProps(
-            # GMEM VPC buffer sizes (sesuai Vulkan blob A810 trace 48/24/20 KB):
+            # GMEM VPC buffer sizes (matches Vulkan blob A810 trace 48/24/20 KB):
             gmem_vpc_attr_buf_size = 49152,
             gmem_vpc_pos_buf_size = 24576,
             gmem_vpc_bv_pos_buf_size = 20480,
-            # Sysmem VPC buffer sizes (sesuai Vulkan blob A810 trace 48/16/20 KB -> total 468 KB < 576 KB, no underflow):
+            # Sysmem VPC buffer sizes (matches Vulkan blob A810 trace 48/16/20 KB -> total 468 KB < 576 KB, no underflow):
             sysmem_vpc_attr_buf_size = 49152,
             sysmem_vpc_pos_buf_size = 16384,
             sysmem_vpc_bv_pos_buf_size = 20480,
@@ -130,7 +130,7 @@ def apply_devices(s):
 
 
 def apply_gmem_cache(s):
-    # Pastikan tidak ada hardcode A810 di fd6_gmem_cache.h (upstream __calc_gmem_cache_offsets otomatis tepat)
+    # Ensure no stale hardcode in fd6_gmem_cache.h (upstream __calc_gmem_cache_offsets is accurate)
     marker = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */"
     if marker in s:
         start = s.find("      if (info->num_ccu == 1 && gmemsize_bytes == 576 * 1024) {")
