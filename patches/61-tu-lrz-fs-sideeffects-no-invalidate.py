@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Preserve LRZ state across draws when fragment shader has side effects.
 
 Upstream Turnip permanently invalidates LRZ for the remaining render pass when

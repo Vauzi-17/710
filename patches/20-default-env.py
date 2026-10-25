@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Built-in default environment variables for Turnip.
 
 Reads default_env.conf (next to this script) and adds a constructor to

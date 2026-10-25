@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """A8XX: Initialize Shader Processor hysteresis thresholds in context preamble.
 
 Qualcomm proprietary traces on Adreno 8xx GPUs show SP hysteresis registers
