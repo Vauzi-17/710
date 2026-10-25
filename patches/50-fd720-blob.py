@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""FD720: penyesuaian nilai register dari blob A720 (V@0676).
+"""FD720: register tuning from Adreno 720 blob analysis (V@0676).
 
 - TPL1_DBG_ECO_CNTL1: enable_tp_ubwc_flag_hint = False (0x40700 -> 0x700, blob 54/54)
 - tile_align_w: 64 -> 32 (blob bin 224x544)
-- RB_UNKNOWN_8E09: 0x7 -> 0x4 (blob selalu 0x4)
+- RB_UNKNOWN_8E09: 0x7 -> 0x4 (blob always writes 0x4)
 - VSC_UNKNOWN_0D08: 0 -> 1 (blob binning 1)
 - SP_UNKNOWN_AB01: 1 -> 0 (a720_raw_magic_regs)
 
-Run from the Mesa source root. All edits are applied or none.
+Run from the Mesa source root. All edits are applied or none. Idempotent and safe to rerun.
 """
 import sys
 

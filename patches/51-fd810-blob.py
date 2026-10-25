@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""FD810: perbaikan terpadu Adreno 810 dari analisis blob A810 (V@0800.74).
+"""FD810: unified Adreno 810 hardware tuning from Vulkan blob trace analysis (V@0800.74).
 
-Memperbaiki masalah fatal layar hitam dan optimalisasi performa Sysmem:
-1. Fix Sysmem CCU Buffer Underflow: GMEM A810 hanya 576 KB (0x90000). Nilai default
-   a8xx_gen1 meminta total 608 KB (bv 32K + attr 128K + pos 64K + color 128K + depth 256K),
-   menyebabkan depth_ccu_offset underflow ke 0xFFFF8000 (-32K) dan merusak flush frame.
-   Disesuaikan dengan ukuran blob sysmem: attr 32K, pos 12K, bv 20K (total 448 KB < 576 KB).
-2. Alignment Sysmem CCU & VPC Layout: Selaraskan offset GMEM sysmem dengan trace proprietary
-   blob A810 (color_ccu 0x6d000, depth_ccu 0x0d000, vpc_attr 0x05000, vpc_pos 0x8d000,
-   vpc_bv_pos 0x00000) untuk meminimalkan CCU cache bank conflict dan unneeded DRAM flushes.
-3. Hapus disable_gmem = True: blob 810 terbukti memakai GMEM binning (test-lrz, test-query, test-tf).
-4. SP_UNKNOWN_AB01: setel ke 0x00000001 (100% capture blob 810 menulis 0x1 di amble1 preamble).
-5. VSC_UNKNOWN_0D08: setel ke 1 saat binning setup (sesuai blob 810).
-6. KGSL chip_id 0x44010000: pastikan terdaftar bersama fallback 0xffff44010000.
+Resolves fatal black screen issues and optimizes Turnip Vulkan architecture for A810:
+1. Fix Sysmem CCU Buffer Underflow: A810 GMEM size is 576 KB (0x90000). Upstream
+   a8xx_gen1 defaults requested 608 KB (bv 32K + attr 128K + pos 64K + color 128K + depth 256K),
+   causing depth_ccu_offset to underflow to 0xFFFF8000 (-32K) and breaking frame flushes.
+   Aligned with Vulkan blob sizes: attr 48K, pos 16K, bv 20K (total 468 KB < 576 KB).
+2. Clean Sysmem & GMEM VPC Alignment: Native __calc_gmem_cache_offsets() formula produces
+   offsets matching official Vulkan blob hardware traces (Sysmem: attr 0x7f000, pos 0x7b000,
+   color 0x5b000, depth 0x1b000; GMEM: attr 0x7f000, pos 0x79000, color 0x75000).
+   Requires no manual hardcoding in fd6_gmem_cache.h.
+3. GMEM VPC Buffer Sizes: Match Vulkan blob binning buffer sizes:
+   attr 48K, pos 24K, bv 20K (previously 16K/12K/20K from GLES).
+4. Remove disable_gmem = True: A810 blob actively utilizes GMEM binning (verified across 39+ dEQP tests).
+5. SP_UNKNOWN_AB01 = 0: Vulkan blob consistently writes 0x0 across 312 writes (value 1 is GLES-only).
+   Consistently utilizes upstream a8xx_base_raw_magic_regs.
+6. VSC_UNKNOWN_0D08 = 1: Enabled in binning setup (matches A810 Vulkan & GLES traces).
+7. KGSL chip_id 0x44010000: Registered alongside fallback 0xffff44010000.
+8. cs_shared_mem_size: Retains 32 KB baseline for 1 CCU.
 
-Dijalankan dari root direktori Mesa. Idempoten dan aman dijalankan berulang kali.
+Run from the Mesa source root. Idempotent and safe to rerun.
 """
 import sys
 
 NAME = "51-fd810-blob.py"
-SUMMARY = "FD810 blob: fix sysmem underflow & align CCU/VPC offsets (0x6d000/0xd000), remove disable_gmem, ab01=1, vsc_0d08=1, chip_id=0x44010000"
+SUMMARY = "FD810 Vulkan blob: fix sysmem VPC 48/16/20K, GMEM VPC 48/24/20K, clean offsets, remove disable_gmem, ab01=0, vsc_0d08=1, chip_id=0x44010000"
 
 DEV_INFO   = "src/freedreno/common/freedreno_dev_info.h"
 CMD_BUF    = "src/freedreno/vulkan/tu_cmd_buffer.cc"
@@ -31,7 +36,7 @@ def apply_dev_info(s):
     if "uint32_t vsc_unknown_0d08;" in s:
         return s, None
 
-    # Cari anchor untuk menyisipkan vsc_unknown_0d08
+    # Find anchor to insert vsc_unknown_0d08
     anchor = None
     for cand in ("      bool enable_tp_ubwc_flag_hint;\n",
                  "      bool has_image_processing;\n",
@@ -62,7 +67,7 @@ def apply_cmd_buffer(s):
         s = s.replace(old_0d08, new_0d08, 1)
         return s, None
 
-    # Cek format alternatif jika ada
+    # Check alternative format if present
     alt_0d08 = "tu_cs_emit_regs(cs, VSC_UNKNOWN_0D08(CHIP, 0));"
     if alt_0d08 in s:
         s = s.replace(alt_0d08, "tu_cs_emit_regs(cs, VSC_UNKNOWN_0D08(CHIP, cmd->device->physical_device->info->props.vsc_unknown_0d08));", 1)
@@ -72,44 +77,14 @@ def apply_cmd_buffer(s):
 
 
 def apply_devices(s):
-    # 1. Definisikan a810_raw_magic_regs jika belum ada
-    magic_anchor = "a8xx_base_raw_magic_regs = [\n"
-    a810_magic_def = """a810_raw_magic_regs = [
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 0, 0x00000000],
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 1, 0x00000000],
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 2, 0x00000000],
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 3, 0x00000000],
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 4, 0x00000000],
-        [A6XXRegs.REG_A8XX_GRAS_BIN_FOVEAT_XY_FDM_OFFSET + 5, 0x00000000],
+    # Remove a810_raw_magic_regs if partially injected (Vulkan uses upstream a8xx_base_raw_magic_regs)
+    if "a810_raw_magic_regs = [\n" in s:
+        m_start = s.find("a810_raw_magic_regs = [\n")
+        m_end = s.find("]\n\n", m_start)
+        if m_start != -1 and m_end != -1:
+            s = s[:m_start] + s[m_end + 3:]
 
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_8818,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_8819,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_881A,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_881B,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_881C,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_881D,   0x00000000],
-        [A6XXRegs.REG_A6XX_RB_UNKNOWN_881E,   0x00000000],
-        [A6XXRegs.REG_A7XX_RB_LRZ_CNTL2,      0x00000000],
-        [A6XXRegs.REG_A8XX_RB_RESOLVE_CNTL_5, 0x00000001],
-
-        [A6XXRegs.REG_A7XX_SP_UNKNOWN_AB01,   0x00000001], # Blob 810 V@0800: 0x1 in 100% captures
-        [A6XXRegs.REG_A7XX_SP_HLSQ_MODE_CNTL, 0x00000000],
-        [A6XXRegs.REG_A8XX_SP_UNKNOWN_AB23,   0x00000000],
-
-        [A6XXRegs.REG_A6XX_TPL1_PS_ROTATION_CNTL, 0x00000004],
-        [A6XXRegs.REG_A6XX_TPL1_PS_SWIZZLE_CNTL, 0x00000000],
-
-        [A6XXRegs.REG_A8XX_PC_UNKNOWN_980B, 0x00800280],
-        [A6XXRegs.REG_A8XX_PC_MODE_CNTL,    0x00003f00],
-    ]
-
-"""
-    if "a810_raw_magic_regs" not in s:
-        if magic_anchor not in s:
-            return None, "a8xx_base_raw_magic_regs anchor not found in freedreno_devices.py"
-        s = s.replace(magic_anchor, a810_magic_def + magic_anchor, 1)
-
-    # 2. Cari blok add_gpus untuk A810 dan ganti sepenuhnya dengan entri yang benar
+    # Locate add_gpus block for A810 and replace with clean entry
     idx = s.find('Adreno (TM) 810')
     if idx == -1:
         return None, "Adreno (TM) 810 entry not found in freedreno_devices.py"
@@ -126,13 +101,13 @@ def apply_devices(s):
     ], A6xxGPUInfo(
         CHIP.A8XX,
         [a7xx_base, a7xx_gen3, a8xx_base, a8xx_gen1, GPUProps(
-            # GMEM VPC buffer sizes (sesuai blob 810):
-            gmem_vpc_attr_buf_size = 16384,
-            gmem_vpc_pos_buf_size = 12288,
+            # GMEM VPC buffer sizes (matches Vulkan blob A810 trace 48/24/20 KB):
+            gmem_vpc_attr_buf_size = 49152,
+            gmem_vpc_pos_buf_size = 24576,
             gmem_vpc_bv_pos_buf_size = 20480,
-            # Sysmem VPC buffer sizes (Mencegah underflow GMEM 576 KB: total 448 KB < 576 KB):
-            sysmem_vpc_attr_buf_size = 32768,
-            sysmem_vpc_pos_buf_size = 12288,
+            # Sysmem VPC buffer sizes (matches Vulkan blob A810 trace 48/16/20 KB -> total 468 KB < 576 KB, no underflow):
+            sysmem_vpc_attr_buf_size = 49152,
+            sysmem_vpc_pos_buf_size = 16384,
             sysmem_vpc_bv_pos_buf_size = 20480,
             vsc_unknown_0d08 = 1,
             has_fs_tex_prefetch = False,
@@ -147,7 +122,7 @@ def apply_devices(s):
         cs_shared_mem_size = 32 * 1024,
         wave_granularity = 2,
         fibers_per_sp = 128 * 2 * 16,
-        raw_magic_regs = a810_raw_magic_regs,
+        raw_magic_regs = a8xx_base_raw_magic_regs,
     ))"""
 
     s = s[:start] + a810_clean_block + s[end:]
@@ -155,26 +130,13 @@ def apply_devices(s):
 
 
 def apply_gmem_cache(s):
+    # Ensure no stale hardcode in fd6_gmem_cache.h (upstream __calc_gmem_cache_offsets is accurate)
     marker = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */"
     if marker in s:
-        return s, None
-
-    anchor = "      __calc_gmem_cache_offsets(info, gmemsize_bytes, sysmem);\n"
-    if s.count(anchor) != 1:
-        return None, "cannot find __calc_gmem_cache_offsets anchor in fd6_gmem_cache.h"
-
-    insert = (
-        "      __calc_gmem_cache_offsets(info, gmemsize_bytes, sysmem);\n"
-        "      if (info->num_ccu == 1 && gmemsize_bytes == 576 * 1024) {\n"
-        "         /* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */\n"
-        "         sysmem->vpc_bv_pos_buf_offset = 0x00000;\n"
-        "         sysmem->vpc_attr_buf_offset   = 0x05000;\n"
-        "         sysmem->depth_ccu_offset      = 0x0d000;\n"
-        "         sysmem->color_ccu_offset      = 0x6d000;\n"
-        "         sysmem->vpc_pos_buf_offset    = 0x8d000;\n"
-        "      }\n"
-    )
-    s = s.replace(anchor, insert, 1)
+        start = s.find("      if (info->num_ccu == 1 && gmemsize_bytes == 576 * 1024) {")
+        end = s.find("      }\n", start)
+        if start != -1 and end != -1:
+            s = s[:start] + s[end + 8:]
     return s, None
 
 
@@ -188,14 +150,19 @@ def main():
         print(f"{NAME}: WARNING cannot read source files: {e}; skipped")
         return 0
 
-    has_a810_magic = "a810_raw_magic_regs" in devices_src
-    has_a810_sysmem = "sysmem_vpc_attr_buf_size = 32768" in devices_src
+    has_a810_sysmem = "sysmem_vpc_attr_buf_size = 49152" in devices_src
+    has_a810_gmem = "gmem_vpc_attr_buf_size = 49152" in devices_src
     has_a810_chip = "GPUId(chip_id=0x44010000" in devices_src
-    has_no_disable_gmem = "disable_gmem = True" not in devices_src[devices_src.find("Adreno (TM) 810"):devices_src.find("Adreno (TM) 810") + 800]
+    a810_scope = devices_src[devices_src.find("Adreno (TM) 810"):devices_src.find("Adreno (TM) 810") + 800]
+    has_no_disable_gmem = "disable_gmem = True" not in a810_scope
     has_vsc = "vsc_unknown_0d08 = 1" in devices_src
-    has_gmem_cache = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */" in gmem_cache_src
-    already_done = (has_a810_magic and has_a810_sysmem and has_a810_chip and
-                    has_no_disable_gmem and has_vsc and has_gmem_cache)
+    has_upstream_magic = "raw_magic_regs = a8xx_base_raw_magic_regs" in a810_scope
+    no_a810_magic = "a810_raw_magic_regs" not in devices_src
+    no_gmem_cache_hack = "/* Adreno 810: align sysmem VPC and CCU layout with blob hardware trace */" not in gmem_cache_src
+
+    already_done = (has_a810_sysmem and has_a810_gmem and has_a810_chip and
+                    has_no_disable_gmem and has_vsc and has_upstream_magic and
+                    no_a810_magic and no_gmem_cache_hack)
 
     if already_done:
         print(f"{NAME}: already applied")
@@ -227,8 +194,9 @@ def main():
         f.write(new_cmd_buf)
     with open(DEVICES, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_devices)
-    with open(GMEM_CACHE, "w", encoding="utf-8", newline="\n") as f:
-        f.write(new_gmem_cache)
+    if new_gmem_cache != gmem_cache_src:
+        with open(GMEM_CACHE, "w", encoding="utf-8", newline="\n") as f:
+            f.write(new_gmem_cache)
 
     print(f"{NAME}: applied ({SUMMARY})")
     return 0
