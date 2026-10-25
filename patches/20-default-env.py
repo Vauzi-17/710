@@ -111,6 +111,8 @@ tu_load_env_file(const char *path)
    int count = 0;
    while (fgets(line, sizeof(line), f)) {{
       char *p = line;
+      if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF)
+         p += 3;
       while (*p == ' ' || *p == '\\t')
          p++;
       if (*p == '#' || *p == '\\0' || *p == '\\r' || *p == '\\n')
