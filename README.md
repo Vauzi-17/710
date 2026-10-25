@@ -22,6 +22,9 @@ Optional environment variables can be overridden at runtime without rebuilding:
 `/sdcard/Android/data/<package_name>/files/default_env.conf`  
 *(Recommended baseline: `TU_DEBUG=sysmem` for rendering stability)*
 
+## AI Assistance & Experimental Notice
+Portions of the patches and scripts in this repository were generated or refactored with the help of Large Language Models (LLMs). While verified through hardware testing and driver traces, they remain experimental and might cause errors or instability in untested games.
+
 ## Building
 ```bash
 BUILD_VERSION=4.5 bash turnip_builder.sh
