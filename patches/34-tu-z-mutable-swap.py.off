@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Mark swapped mutable images kept tiled by 30-tu-z-mutable.py as is_mutable.
 
 30-tu-z-mutable.py keeps MUTABLE_FORMAT images tiled even when their format
