@@ -41,10 +41,6 @@ if os.path.exists(CONF):
             sys.exit(f"20-default-env.py: {CONF}:{lineno}: bad variable name '{name}'")
         entries.append((name, value))
 
-if not entries:
-    print("20-default-env.py: default_env.conf has no entries, nothing to do")
-    sys.exit(0)
-
 src = open(TARGET).read()
 if MARKER in src:
     print("20-default-env.py: already applied")
@@ -55,7 +51,12 @@ def c_string(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-table = "\n".join(f"   {{ {c_string(n)}, {c_string(v)} }}," for n, v in entries)
+if entries:
+    table = "\n".join(f"   {{ {c_string(n)}, {c_string(v)} }}," for n, v in entries)
+else:
+    table = "   { NULL, NULL },"
+
+
 code = f"""
 
 /* Built-in default environment (patches/default_env.conf) with app override support.
@@ -158,7 +159,7 @@ __attribute__((constructor)) static void
 {MARKER}(void)
 {{
    for (unsigned i = 0; i < sizeof(tu_default_env) / sizeof(tu_default_env[0]); i++) {{
-      if (os_get_option(tu_default_env[i].name))
+      if (!tu_default_env[i].name || os_get_option(tu_default_env[i].name))
          continue;
       if (setenv(tu_default_env[i].name, tu_default_env[i].value, 0) == 0)
          mesa_logi("default env: %s=%s", tu_default_env[i].name,
