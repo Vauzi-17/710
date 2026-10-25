@@ -29,7 +29,7 @@ EDITS = [
      '#include "tu_image.h"\n'
      '#include "util/u_debug.h"\n'
      '\n'
-     'DEBUG_GET_ONCE_BOOL_OPTION(tu_lrz_preserve_fs_sideeffects, "TU_LRZ_PRESERVE_FS_SIDEEFFECTS", true)\n',
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_lrz_preserve_fs_sideeffects, "TU_LRZ_PRESERVE_FS_SIDEEFFECTS", false)\n',
      1),
     (LRZ_CC,
      '   if (disable_lrz_due_to_fs) {\n'

@@ -294,7 +294,30 @@ EDITS = [
      '   uint32_t z_bgra_mask : 8;\n'
      '   uint32_t padding : 15;\n',
      1),
-    # 8. Shader CC: multi-mode lowering pass
+    # 8. Shader CC: multi-mode lowering pass and driver ubo handling for A7xx
+    (SHADER_CC,
+     '   case nir_intrinsic_load_frag_invocation_count:\n'
+     '   case nir_intrinsic_load_alpha_to_coverage_enable_ir3: {\n'
+     '      if (!dev->compiler->info->props.load_shader_consts_via_preamble)\n'
+     '         return false;\n'
+     '\n'
+     '      unsigned offset =\n'
+     '         instr->intrinsic == nir_intrinsic_load_frag_invocation_count ?\n'
+     '         IR3_DP_FS(frag_invocation_count) :\n'
+     '         IR3_DP_FS(alpha_to_coverage_enable);\n',
+     '   case nir_intrinsic_load_frag_invocation_count:\n'
+     '   case nir_intrinsic_load_alpha_to_coverage_enable_ir3:\n'
+     '   case nir_intrinsic_load_rt_swap_mask_ir3: {\n'
+     '      if (!dev->compiler->info->props.load_shader_consts_via_preamble)\n'
+     '         return false;\n'
+     '\n'
+     '      unsigned offset =\n'
+     '         instr->intrinsic == nir_intrinsic_load_frag_invocation_count ?\n'
+     '         IR3_DP_FS(frag_invocation_count) :\n'
+     '         (instr->intrinsic == nir_intrinsic_load_alpha_to_coverage_enable_ir3 ?\n'
+     '          IR3_DP_FS(alpha_to_coverage_enable) :\n'
+     '          IR3_DP_FS(rt_swap_mask));\n',
+     1),
     (SHADER_CC,
      'static bool\n'
      'lower_alpha_to_coverage(nir_shader *shader)\n',

@@ -26,7 +26,7 @@ EDITS = [
      '\n'
      '#include "util/u_debug.h"\n'
      '\n'
-     'DEBUG_GET_ONCE_BOOL_OPTION(tu_sysmem_relax_wfi, "TU_SYSMEM_RELAX_WFI", true)\n',
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_sysmem_relax_wfi, "TU_SYSMEM_RELAX_WFI", false)\n',
      1),
     (CMD_BUFFER,
      '      if (emit_subpass_slice_wait)\n'

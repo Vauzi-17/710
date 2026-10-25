@@ -38,7 +38,7 @@ EDITS = [
      '#include "tu_rmv.h"\n',
      '#include "tu_rmv.h"\n'
      '\n'
-     'DEBUG_GET_ONCE_BOOL_OPTION(tu_draw_state_skip_identical, "TU_DRAW_STATE_SKIP_IDENTICAL", true)\n',
+     'DEBUG_GET_ONCE_BOOL_OPTION(tu_draw_state_skip_identical, "TU_DRAW_STATE_SKIP_IDENTICAL", false)\n',
      1),
     (PIPELINE_CC,
      '#define EMIT_STATE(name)                                                      \\\n'
