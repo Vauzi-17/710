@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Built-in default environment variables for Turnip.
+"""Built-in default environment variables for Turnip with app override support.
 
 Reads default_env.conf (next to this script) and adds a constructor to
 src/freedreno/vulkan/tu_util.cc that runs when libvulkan_freedreno.so is
-loaded. For each NAME=VALUE it calls setenv() only if os_get_option(NAME)
-finds nothing, so the priority is:
+loaded.
 
-  1. the real environment (emulator / launcher setting)
-  2. Android property debug.mesa.* / vendor.mesa.*
-  3. the default from default_env.conf
-
-The constructor runs before the driver reads any option (TU_DEBUG is parsed
-when the instance is created, IR3_SHADER_DEBUG when the compiler is), so the
-defaults behave exactly like variables set by the app.
-
-Note: setenv() changes the environment of the whole process, so other code
-in the same process that reads the same names sees them too.
+Priority order:
+  1. Custom configuration file from application storage:
+     - $TU_ENV_CONFIG (if set)
+     - /sdcard/Android/data/<package>/files/default_env.conf
+     - /data/data/<package>/files/default_env.conf
+     - /sdcard/default_env.conf
+  2. The real environment (emulator / launcher setting)
+  3. Android property debug.mesa.* / vendor.mesa.*
+  4. The built-in defaults from default_env.conf
 
 Run from the Mesa source root.
 """
@@ -60,11 +58,13 @@ def c_string(s):
 table = "\n".join(f"   {{ {c_string(n)}, {c_string(v)} }}," for n, v in entries)
 code = f"""
 
-/* Built-in default environment (patches/default_env.conf). Runs when the
- * driver is loaded; a variable already set in the environment or as a
- * debug.mesa.* property is left alone.
+/* Built-in default environment (patches/default_env.conf) with app override support.
+ * Runs when the driver is loaded into the process.
  */
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 #include "util/log.h"
 #include "util/os_misc.h"
 
@@ -74,6 +74,85 @@ static const struct {{
 }} tu_default_env[] = {{
 {table}
 }};
+
+static void
+tu_load_env_file(const char *path)
+{{
+   FILE *f = fopen(path, "r");
+   if (!f)
+      return;
+
+   char line[512];
+   while (fgets(line, sizeof(line), f)) {{
+      char *p = line;
+      while (*p == ' ' || *p == '\\t')
+         p++;
+      if (*p == '#' || *p == '\\0' || *p == '\\r' || *p == '\\n')
+         continue;
+
+      char *eq = strchr(p, '=');
+      if (!eq)
+         continue;
+
+      *eq = '\\0';
+      char *key = p;
+      char *val = eq + 1;
+
+      /* Trim trailing whitespace from key */
+      char *end = eq - 1;
+      while (end > key && (*end == ' ' || *end == '\\t')) {{
+         *end = '\\0';
+         end--;
+      }}
+
+      /* Trim leading whitespace from val */
+      while (*val == ' ' || *val == '\\t')
+         val++;
+
+      /* Trim trailing \\r, \\n, and whitespace from val */
+      end = val + strlen(val) - 1;
+      while (end >= val && (*end == '\\r' || *end == '\\n' || *end == ' ' || *end == '\\t')) {{
+         *end = '\\0';
+         end--;
+      }}
+
+      if (*key != '\\0') {{
+         setenv(key, val, 1);
+         mesa_logi("custom env override (%s): %s=%s", path, key, val);
+      }}
+   }}
+   fclose(f);
+}}
+
+static void
+tu_load_app_custom_env(void)
+{{
+   const char *custom_path = getenv("TU_ENV_CONFIG");
+   if (custom_path && custom_path[0])
+      tu_load_env_file(custom_path);
+
+   char pkg[128] = {{0}};
+   FILE *f = fopen("/proc/self/cmdline", "r");
+   if (f) {{
+      if (fgets(pkg, sizeof(pkg), f)) {{
+         char *colon = strchr(pkg, ':');
+         if (colon)
+            *colon = '\\0';
+      }}
+      fclose(f);
+   }}
+
+   char path[256];
+   if (pkg[0]) {{
+      snprintf(path, sizeof(path), "/sdcard/Android/data/%s/files/default_env.conf", pkg);
+      tu_load_env_file(path);
+
+      snprintf(path, sizeof(path), "/data/data/%s/files/default_env.conf", pkg);
+      tu_load_env_file(path);
+   }}
+
+   tu_load_env_file("/sdcard/default_env.conf");
+}}
 
 __attribute__((constructor)) static void
 {MARKER}(void)
@@ -85,6 +164,8 @@ __attribute__((constructor)) static void
          mesa_logi("default env: %s=%s", tu_default_env[i].name,
                    tu_default_env[i].value);
    }}
+
+   tu_load_app_custom_env();
 }}
 """
 

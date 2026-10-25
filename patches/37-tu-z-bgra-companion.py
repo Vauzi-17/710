@@ -72,25 +72,30 @@ tu_z_bgra_swap_output(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    unsigned comp = nir_intrinsic_component(intr);
    unsigned wrmask = nir_intrinsic_write_mask(intr);
    nir_def *val = intr->src[0].ssa;
+   unsigned num_comp = intr->num_components;
 
    b->cursor = nir_before_instr(&intr->instr);
 
-   u_foreach_bit (i, wrmask) {
+   nir_def *chans[NIR_MAX_VEC_COMPONENTS];
+   for (unsigned i = 0; i < num_comp; i++) {
       unsigned c = comp + i;
-      unsigned t = c == 0 ? 2 : (c == 2 ? 0 : c);
-      nir_def *chan = nir_channel(b, val, i);
-      nir_intrinsic_instr *st =
-         nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
-      st->src[0] = nir_src_for_ssa(chan);
-      st->num_components = 1;
-      nir_intrinsic_set_component(st, t);
-      nir_intrinsic_set_write_mask(st, 0x1);
-      nir_builder_instr_insert(b, &st->instr);
+      unsigned src_c = (c == 0) ? (2 - comp) : ((c == 2) ? (0 - comp) : i);
+      if (src_c < num_comp)
+         chans[i] = nir_channel(b, val, src_c);
+      else
+         chans[i] = nir_channel(b, val, i);
+   }
+   nir_def *swizzled = nir_vec(b, chans, num_comp);
+   nir_src_rewrite(&intr->src[0], swizzled);
+
+   if (comp == 0 && (wrmask & 0x5)) {
+      unsigned new_mask = (wrmask & ~0x5) | ((wrmask & 0x1) << 2) | ((wrmask & 0x4) >> 2);
+      nir_intrinsic_set_write_mask(intr, new_mask);
    }
 
-   nir_instr_remove(&intr->instr);
    return true;
 }
+
 
 '''
 
