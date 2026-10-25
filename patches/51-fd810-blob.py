@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """FD810: unified Adreno 810 hardware tuning from Vulkan blob trace analysis (V@0800.74).
 
 Resolves fatal black screen issues and optimizes Turnip Vulkan architecture for A810:

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Turnip-Z port: make the Z-MUTABLE tiled/UBWC decision colour-safe.
 
 30-tu-z-mutable.py keeps MUTABLE_FORMAT images tiled (+UBWC) even when their

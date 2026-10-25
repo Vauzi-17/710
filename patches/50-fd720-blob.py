@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """FD720: register tuning from Adreno 720 blob analysis (V@0676).
 
 - TPL1_DBG_ECO_CNTL1: enable_tp_ubwc_flag_hint = False (0x40700 -> 0x700, blob 54/54)

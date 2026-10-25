@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """FD722: register tuning and hardware properties for Adreno 722 from Qualcomm blob analysis (chip_id 0x43020100).
 
 Corrections based on analysis of 116 .rd cmdstream traces and KGSL kernel IOCTLs:

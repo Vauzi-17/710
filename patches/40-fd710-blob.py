@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """FD710: consolidated hardware property and register tuning from Adreno 710 blob analysis (V@0615).
 
 Consolidates blob-matching properties for Adreno 710 (chip_id 0x07010000):

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Preserve LRZ state across draws on depth compare-op direction change.
 
 Upstream Turnip permanently invalidates LRZ for the remaining render pass when

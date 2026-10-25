@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """Avoid redundant dynamic draw state packet emission.
 
 When dynamic state dirty bits are set (e.g. on pipeline binds or repetitive

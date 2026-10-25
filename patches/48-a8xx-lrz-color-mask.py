@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """A8xx: Emit GRAS_LRZ_COLOR_COMP_MASK (0x810c) in blend dynamic state.
 
 On Adreno 8xx (a810+), the rasterizer LRZ block tracks per-MRT component write

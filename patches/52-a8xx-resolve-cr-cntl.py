@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """A8XX: Emit REG_A8XX_RB_RESOLVE_CR_CNTL=1 in preamble magic registers.
 
 Qualcomm proprietary Vulkan traces on A8xx GPUs (including Adreno 810) emit

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# From: Vauzi-17
 """A8XX: Set FORCE_BI_DIR_LRZ_DISABLE in sysmem and disabled LRZ render passes.
 
 On Adreno 8xx, hardware traces show GRAS_SC_BIN_CNTL (0x8231) sets bit 14
