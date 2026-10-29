@@ -1,0 +1,658 @@
+From 68cf06cd8e6fcce82ed7cf4a7d77c3f3f582057f Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Mon, 26 Oct 2026 20:49:58 +0100
+Subject: [PATCH 1/6] tu: Always use linear fragment shading rate attachments
+ on a7xx gen1
+
+A725 reads the fragment shading rate attachment as linear regardless of
+GRAS_QUALITY_BUFFER_INFO.TILE_MODE. The proprietary driver also uses linear
+attachments there.
+
+Fixes on A725:
+dEQP-VK.fragment_shading_rate.*.attachment.*
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h | 5 +++++
+ src/freedreno/common/freedreno_devices.py | 3 ++-
+ src/freedreno/vulkan/tu_image.cc          | 3 ++-
+ 3 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index 47f47f930a5d..6fc70e8b91eb 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -506,6 +506,11 @@ struct fd_dev_info {
+        */
+       bool prefetch_sam_helpers_quirk;
+ 
++      /* On a7xx gen1 the fragment shading rate attachment seems to always be
++       * read as linear, tiled attachments give wrong rates.
++       */
++      bool fsr_attachment_linear_quirk;
++
+       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
+       bool subpass_fence_cleans_resolve;
+    } props;
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 47e70304d5ac..0e1b07237f53 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -826,7 +826,8 @@ a7xx_gen1 = GPUProps(
+         supports_uav_ubwc = True,
+         enable_tp_ubwc_flag_hint = True,
+         reading_shading_rate_requires_smask_quirk = True,
+-        QCTDD08049535 = True,
++        s2en_index_ignores_alias_tex_quirk = True,
++        fsr_attachment_linear_quirk = True,
+         QCTDD08407086 = True,
+         QCTDD08517960 = True,
+     )
+diff --git a/src/freedreno/vulkan/tu_image.cc b/src/freedreno/vulkan/tu_image.cc
+index 478a63b71d44..3fa65710ee9b 100644
+--- a/src/freedreno/vulkan/tu_image.cc
++++ b/src/freedreno/vulkan/tu_image.cc
+@@ -580,7 +580,8 @@ tu_image_init(struct tu_device *device, struct tu_image *image,
+    /* Some kind of HW limitation. */
+    if (pCreateInfo->usage &
+           VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR &&
+-       image->vk.extent.width < 16) {
++       (image->vk.extent.width < 16 ||
++        device->physical_device->info->props.fsr_attachment_linear_quirk)) {
+       force_linear_tile = true;
+    }
+ 
+-- 
+GitLab
+
+
+From dedd816c9f8ed7fd62ec488a06a773d876cac99c Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Mon, 26 Oct 2026 23:04:11 +0100
+Subject: [PATCH 2/6] tu: Use SUBPASS_FENCE only on a7xx gen2+
+
+On A725 (a7xx gen1) input attachment reads after a by-region barrier
+inside a binned render pass see stale data when GMEM is invalidated only
+via SUBPASS_FENCE, failing rasterization_order_attachment_access
+*.multi_draw_barriers in GMEM mode.
+
+The blob never emits SUBPASS_FENCE on a7xx gen1.
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h |  5 +++
+ src/freedreno/common/freedreno_devices.py |  2 ++
+ src/freedreno/vulkan/tu_clear_blit.cc     | 12 +++----
+ src/freedreno/vulkan/tu_cmd_buffer.cc     | 44 +++++++++++++----------
+ src/freedreno/vulkan/tu_cmd_buffer.h      |  3 +-
+ src/freedreno/vulkan/tu_query_pool.cc     |  2 +-
+ 6 files changed, 42 insertions(+), 26 deletions(-)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index 6fc70e8b91eb..7b21d3029ed3 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -511,6 +511,11 @@ struct fd_dev_info {
+        */
+       bool fsr_attachment_linear_quirk;
+ 
++      /* Whether SUBPASS_FENCE can be used as a lighter-weight GMEM-only
++       * UCHE invalidate and slice-local wait for by-region barriers.
++       */
++      bool has_subpass_fence;
++
+       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
+       bool subpass_fence_cleans_resolve;
+    } props;
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 0e1b07237f53..949f9be16df2 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -847,6 +847,7 @@ a7xx_gen2 = GPUProps(
+         has_image_processing = True,
+         has_64b_image_atomics = True,
+         has_implicit_fragface_fragcoord_ij_linear = True,
++        has_subpass_fence = True,
+ 
+         QCTDD08049535 = True,
+         QCTDD08901551 = True,
+@@ -881,6 +882,7 @@ a7xx_gen3 = GPUProps(
+         max_draw_states = 64,
+         has_64b_image_atomics = True,
+         has_implicit_fragface_fragcoord_ij_linear = True,
++        has_subpass_fence = True,
+         subpass_fence_cleans_resolve = True,
+ 
+         QCTDD08901551 = False,
+diff --git a/src/freedreno/vulkan/tu_clear_blit.cc b/src/freedreno/vulkan/tu_clear_blit.cc
+index 199c7d13ea63..bee73210c295 100644
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -2448,7 +2448,7 @@ handle_buffer_unaligned_store(struct tu_cmd_buffer *cmd,
+       return;
+ 
+    if ((dst_va & 63) || (size & 63)) {
+-      tu_flush_for_access<CHIP>(&cmd->state.cache, TU_ACCESS_NONE,
++      tu_flush_for_access<CHIP>(cmd->device, &cmd->state.cache, TU_ACCESS_NONE,
+                                 TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE);
+       /* Wait for invalidations to land. */
+       cmd->state.cache.flush_bits |= TU_CMD_FLAG_WAIT_FOR_IDLE;
+@@ -2463,7 +2463,7 @@ after_buffer_unaligned_buffer_store(struct tu_cmd_buffer *cmd,
+                                     bool unaligned_store)
+ {
+    if (unaligned_store) {
+-      tu_flush_for_access<CHIP>(&cmd->state.cache,
++      tu_flush_for_access<CHIP>(cmd->device, &cmd->state.cache,
+                                 TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE,
+                                 TU_ACCESS_NONE);
+    }
+@@ -5021,7 +5021,7 @@ tu_emit_clear_gmem_attachment(struct tu_cmd_buffer *cmd,
+       }
+    }
+ 
+-   tu_flush_for_access<CHIP>(&cmd->state.renderpass_cache,
++   tu_flush_for_access<CHIP>(cmd->device, &cmd->state.renderpass_cache,
+                              TU_ACCESS_BLIT_WRITE_GMEM, TU_ACCESS_NONE);
+ 
+    trace_end_gmem_clear(&cmd->rp_trace, cs);
+@@ -5291,7 +5291,7 @@ tu_clear_attachments_generic(struct tu_cmd_buffer *cmd,
+ 
+    tu_emit_resolve_group<A7XX>(cmd, cs, &resolve_group);
+ 
+-   TU_CALLX(cmd->device, tu_flush_for_access)(&cmd->state.renderpass_cache, TU_ACCESS_BLIT_WRITE_GMEM, TU_ACCESS_NONE);
++   TU_CALLX(cmd->device, tu_flush_for_access)(cmd->device, &cmd->state.renderpass_cache, TU_ACCESS_BLIT_WRITE_GMEM, TU_ACCESS_NONE);
+ }
+ 
+ template <chip CHIP>
+@@ -5516,7 +5516,7 @@ tu7_generic_clear_attachment(struct tu_cmd_buffer *cmd,
+    }
+ 
+    TU_CALLX(cmd->device, tu_flush_for_access)(
+-      &cmd->state.renderpass_cache, TU_ACCESS_BLIT_WRITE_GMEM, TU_ACCESS_NONE);
++      cmd->device, &cmd->state.renderpass_cache, TU_ACCESS_BLIT_WRITE_GMEM, TU_ACCESS_NONE);
+ 
+    trace_end_generic_clear(&cmd->rp_trace, cs);
+ }
+@@ -5713,7 +5713,7 @@ tu_emit_blit(struct tu_cmd_buffer *cmd,
+       event_blit_run<CHIP>(cmd, cs, attachment, fdl_view, i, separate_stencil);
+    }
+ 
+-   tu_flush_for_access<CHIP>(&cmd->state.cache, TU_ACCESS_BLIT_WRITE_GMEM,
++   tu_flush_for_access<CHIP>(cmd->device, &cmd->state.cache, TU_ACCESS_BLIT_WRITE_GMEM,
+                              TU_ACCESS_NONE);
+ }
+ 
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index b347a33b76de..43395285e0b2 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -4010,7 +4010,7 @@ tu_cmd_render_tiles(struct tu_cmd_buffer *cmd,
+     */
+    if (cmd->state.rp.read_only_input_attachments &&
+        cmd->state.rp.input_attachment_read_barrier) {
+-      tu_flush_for_access<CHIP>(&cmd->state.cache, TU_ACCESS_NONE,
++      tu_flush_for_access<CHIP>(cmd->device, &cmd->state.cache, TU_ACCESS_NONE,
+                                 TU_ACCESS_UCHE_READ);
+    }
+ 
+@@ -5775,7 +5775,8 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
+ 
+ template <chip CHIP>
+ void
+-tu_flush_for_access(struct tu_cache_state *cache,
++tu_flush_for_access(struct tu_device *dev,
++                    struct tu_cache_state *cache,
+                     enum tu_cmd_access_mask src_mask,
+                     enum tu_cmd_access_mask dst_mask)
+ {
+@@ -5863,11 +5864,11 @@ tu_flush_for_access(struct tu_cache_state *cache,
+    }
+ 
+    if (dst_mask & TU_ACCESS_UCHE_READ_GMEM) {
+-      /* On a7xx+, use SUBPASS_FENCE (SUBPASS_SLICE_FENCE on a8xx) which
+-       * guarantees accesses for GMEM accesses through UCHE instead of
++      /* When available (A7XX gen2+), use SUBPASS_FENCE (SUBPASS_SLICE_FENCE on a8xx)
++       * which guarantees accesses for GMEM accesses through UCHE instead of
+        * invalidating all of UCHE.
+        */
+-      if (CHIP >= A7XX) {
++      if (dev->physical_device->info->props.has_subpass_fence) {
+          flush_bits |= TU_CMD_FLAG_CACHE_INVALIDATE_GMEM;
+       } else {
+          flush_bits |= TU_CMD_FLAG_CACHE_INVALIDATE;
+@@ -6272,7 +6273,8 @@ vk2tu_dst_stage(struct tu_device *dev,
+ 
+ template <chip CHIP>
+ static void
+-tu_flush_for_stage(struct tu_cache_state *cache,
++tu_flush_for_stage(struct tu_device *dev,
++                   struct tu_cache_state *cache,
+                    enum tu_stage src_stage, enum tu_stage dst_stage,
+                    bool by_region)
+ {
+@@ -6302,7 +6304,7 @@ tu_flush_for_stage(struct tu_cache_state *cache,
+                cache->pending_flush_bits |= TU_CMD_FLAG_WAIT_FOR_ME;
+          }
+       } else {
+-         if (CHIP >= A7XX && by_region)
++         if (by_region && dev->physical_device->info->props.has_subpass_fence)
+             cache->flush_bits |= TU_CMD_FLAG_SUBPASS_SLICE_FENCE;
+          else
+             cache->flush_bits |= TU_CMD_FLAG_WAIT_FOR_IDLE;
+@@ -6769,11 +6771,12 @@ tu_subpass_barrier(struct tu_cmd_buffer *cmd_buffer,
+          dst_flags |= TU_ACCESS_UCHE_READ;
+    }
+ 
+-   tu_flush_for_access<CHIP>(cache, src_flags, dst_flags);
++   tu_flush_for_access<CHIP>(cmd_buffer->device, cache, src_flags, dst_flags);
+ 
+    enum tu_stage src_stage = vk2tu_src_stage(cmd_buffer->device, src_stage_vk);
+    enum tu_stage dst_stage = vk2tu_dst_stage(cmd_buffer->device, dst_stage_vk);
+-   tu_flush_for_stage<CHIP>(cache, src_stage, dst_stage, !barrier->non_fb_local);
++   tu_flush_for_stage<CHIP>(cmd_buffer->device, cache, src_stage, dst_stage,
++                            !barrier->non_fb_local);
+ }
+ 
+ template <chip CHIP>
+@@ -7148,10 +7151,10 @@ template <chip CHIP>
+ static void
+ tu_feedback_invalidate(struct tu_cmd_buffer *cmd)
+ {
+-   tu_flush_for_access<CHIP>(&cmd->state.renderpass_cache,
++   tu_flush_for_access<CHIP>(cmd->device, &cmd->state.renderpass_cache,
+                              TU_ACCESS_BLIT_WRITE_GMEM,
+                              TU_ACCESS_UCHE_READ_GMEM);
+-   tu_flush_for_stage<CHIP>(&cmd->state.renderpass_cache,
++   tu_flush_for_stage<CHIP>(cmd->device, &cmd->state.renderpass_cache,
+                             TU_STAGE_BR, TU_STAGE_BR, true);
+ }
+ 
+@@ -7292,7 +7295,8 @@ tu_emit_rendering_attachment_locations(struct tu_cmd_buffer *cmd)
+     */
+    if (cmd->device->physical_device->info->chip == 6) {
+       struct tu_cache_state *cache = &cmd->state.renderpass_cache;
+-      tu_flush_for_access<CHIP>(cache, TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE,
++      tu_flush_for_access<CHIP>(cmd->device, cache,
++                                TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE,
+                                 TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE);
+       cache->flush_bits |= TU_CMD_FLAG_WAIT_FOR_IDLE;
+    }
+@@ -10713,13 +10717,14 @@ tu_barrier(struct tu_cmd_buffer *cmd,
+    if (cmd->state.pass && (dst_flags & TU_ACCESS_UCHE_READ_GMEM))
+       cmd->state.rp.input_attachment_read_barrier = true;
+ 
+-   TU_CALLX(cmd->device, tu_flush_for_access)(cache, src_flags, dst_flags);
++   TU_CALLX(cmd->device, tu_flush_for_access)(cmd->device, cache, src_flags,
++                                              dst_flags);
+ 
+    if (!no_sync) {
+       enum tu_stage src_stage = vk2tu_src_stage(cmd->device, srcStage);
+       enum tu_stage dst_stage = vk2tu_dst_stage(cmd->device, dstStage);
+-      TU_CALLX(cmd->device, tu_flush_for_stage)(cache, src_stage, dst_stage,
+-                                                by_region);
++      TU_CALLX(cmd->device, tu_flush_for_stage)(cmd->device, cache, src_stage,
++                                                dst_stage, by_region);
+    }
+ }
+ 
+@@ -10926,7 +10931,8 @@ tu_CmdWriteBufferMarker2AMD(VkCommandBuffer commandBuffer,
+     * Flush CCU in order to make the results of previous transfer
+     * operation visible to CP.
+     */
+-   tu_flush_for_access<CHIP>(cache, TU_ACCESS_NONE, TU_ACCESS_SYSMEM_WRITE);
++   tu_flush_for_access<CHIP>(cmd->device, cache, TU_ACCESS_NONE,
++                             TU_ACCESS_SYSMEM_WRITE);
+ 
+    /* Flags that only require a top-of-pipe event. DrawIndirect parameters are
+     * read by the CP, so the draw indirect stage counts as top-of-pipe too.
+@@ -10974,7 +10980,8 @@ tu_CmdWriteBufferMarker2AMD(VkCommandBuffer commandBuffer,
+    }
+ 
+    /* Make sure the result of this write is visible to others. */
+-   tu_flush_for_access<CHIP>(cache, TU_ACCESS_CP_WRITE, TU_ACCESS_NONE);
++   tu_flush_for_access<CHIP>(cmd->device, cache, TU_ACCESS_CP_WRITE,
++                             TU_ACCESS_NONE);
+ }
+ TU_GENX(tu_CmdWriteBufferMarker2AMD);
+ 
+@@ -11000,6 +11007,7 @@ tu_flush_buffer_write_cp(VkCommandBuffer commandBuffer)
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+ 
+    struct tu_cache_state *cache = &cmd->state.cache;
+-   TU_CALLX(cmd->device, tu_flush_for_access)(cache, TU_ACCESS_CP_WRITE,
++   TU_CALLX(cmd->device, tu_flush_for_access)(cmd->device, cache,
++                                              TU_ACCESS_CP_WRITE,
+                                               static_cast<enum tu_cmd_access_mask>(0));
+ }
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
+index 75673e88980a..4174d72b7df8 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.h
++++ b/src/freedreno/vulkan/tu_cmd_buffer.h
+@@ -904,7 +904,8 @@ tu_emit_event_write(struct tu_cmd_buffer *cmd,
+ 
+ template <chip CHIP>
+ void
+-tu_flush_for_access(struct tu_cache_state *cache,
++tu_flush_for_access(struct tu_device *dev,
++                    struct tu_cache_state *cache,
+                     enum tu_cmd_access_mask src_mask,
+                     enum tu_cmd_access_mask dst_mask);
+ 
+diff --git a/src/freedreno/vulkan/tu_query_pool.cc b/src/freedreno/vulkan/tu_query_pool.cc
+index 6c82826ed3b1..6b56962f8a0e 100644
+--- a/src/freedreno/vulkan/tu_query_pool.cc
++++ b/src/freedreno/vulkan/tu_query_pool.cc
+@@ -944,7 +944,7 @@ emit_copy_query_pool_results(struct tu_cmd_buffer *cmdbuf,
+    }
+ 
+    /* Make sure the result of this copy is visible to others. */
+-   tu_flush_for_access<CHIP>(&cmdbuf->state.cache, TU_ACCESS_CP_WRITE, TU_ACCESS_NONE);
++   tu_flush_for_access<CHIP>(cmdbuf->device, &cmdbuf->state.cache, TU_ACCESS_CP_WRITE, TU_ACCESS_NONE);
+ }
+ 
+ template <chip CHIP>
+-- 
+GitLab
+
+
+From 0815824e008ffb499c45f8be8b4f621237758610 Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Mon, 26 Oct 2026 20:40:24 +0100
+Subject: [PATCH 3/6] ir3: Don't alias the s2en texture/sampler index on a7xx
+ gen1
+
+On a7xx gen1 cat5 .s2en instruction ignores alias.tex for its bindless
+texture/sampler index source.
+
+Fixes on A725:
+dEQP-VK.binding_model.descriptorset_random.*.unifindexed.*
+dEQP-VK.binding_model.mutable_descriptor.*.index_push_constant.*
+dEQP-VK.pipeline.fast_linked_library.descriptor_limits.fragment_shader.samplers_199
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h | 5 +++++
+ src/freedreno/common/freedreno_devices.py | 2 +-
+ src/freedreno/ir3/ir3_alias.c             | 6 ++++++
+ 3 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index 7b21d3029ed3..d28353d65334 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -516,6 +516,11 @@ struct fd_dev_info {
+        */
+       bool has_subpass_fence;
+ 
++      /* On a7xx gen1 the bindless texture/sampler index of a cat5 .s2en
++       * instruction seems to ignore aliases.
++       */
++      bool s2en_index_ignores_alias_tex_quirk;
++
+       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
+       bool subpass_fence_cleans_resolve;
+    } props;
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 949f9be16df2..a78bb51f92fd 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -826,8 +826,8 @@ a7xx_gen1 = GPUProps(
+         supports_uav_ubwc = True,
+         enable_tp_ubwc_flag_hint = True,
+         reading_shading_rate_requires_smask_quirk = True,
+-        s2en_index_ignores_alias_tex_quirk = True,
+         fsr_attachment_linear_quirk = True,
++        s2en_index_ignores_alias_tex_quirk = True,
+         QCTDD08407086 = True,
+         QCTDD08517960 = True,
+     )
+diff --git a/src/freedreno/ir3/ir3_alias.c b/src/freedreno/ir3/ir3_alias.c
+index 98037927cfeb..52f58a9ffac3 100644
+--- a/src/freedreno/ir3/ir3_alias.c
++++ b/src/freedreno/ir3/ir3_alias.c
+@@ -85,6 +85,12 @@ alias_srcs(struct ir3_instruction *instr, const struct ir3_compiler *compiler)
+       struct ir3_register *src = old_srcs[src_n];
+       bool can_alias = can_alias_src(src);
+ 
++      if (src_n == 0 && (instr->flags & IR3_INSTR_S2EN) &&
++          compiler->info->props.s2en_index_ignores_alias_tex_quirk) {
++         instr->srcs[instr->srcs_count++] = src;
++         continue;
++      }
++
+       if (!can_alias || !can_alias_srcs_of_def(src)) {
+          if (can_alias && num_aliases + 1 <= MAX_ALIASES) {
+             src->flags |= (IR3_REG_FIRST_ALIAS | IR3_REG_ALIAS);
+-- 
+GitLab
+
+
+From b6fa4254ec594bff464188fbc1631399f3ab5867 Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Thu, 29 Oct 2026 13:50:10 +0100
+Subject: [PATCH 4/6] ir3: Don't prefetch descriptors outside of FS on a7xx
+ gen1
+
+On A725 a dummy prefetch sam.s2en in a vertex shader preamble may cause
+intermittent GPU faults. Dropping only the non-FS sam prefetches fixes it,
+but the blob doesn't emit any descriptor prefetches (sam, resinfo, ldc)
+in VS or CS preambles on A725, so don't prefetch descriptors outside of FS
+at all.
+
+Fixes hang in "God Of War".
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h | 6 ++++++
+ src/freedreno/common/freedreno_devices.py | 1 +
+ src/freedreno/ir3/ir3_nir.c               | 2 ++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index d28353d65334..b13e52cfc22b 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -511,6 +511,12 @@ struct fd_dev_info {
+        */
+       bool fsr_attachment_linear_quirk;
+ 
++      /* On a7xx gen1 a dummy prefetch sam in a non-fragment shader preamble
++       * may cause GPU faults. The blob doesn't emit any descriptor prefetches
++       * outside of FS.
++       */
++      bool non_fs_descriptor_prefetch_quirk;
++
+       /* Whether SUBPASS_FENCE can be used as a lighter-weight GMEM-only
+        * UCHE invalidate and slice-local wait for by-region barriers.
+        */
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index a78bb51f92fd..bdb45148174e 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -828,6 +828,7 @@ a7xx_gen1 = GPUProps(
+         reading_shading_rate_requires_smask_quirk = True,
+         fsr_attachment_linear_quirk = True,
+         s2en_index_ignores_alias_tex_quirk = True,
++        non_fs_descriptor_prefetch_quirk = True,
+         QCTDD08407086 = True,
+         QCTDD08517960 = True,
+     )
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index 6e6f09e7b08d..b0cbc3fff84a 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -1676,6 +1676,8 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so,
+    progress |= OPT(s, ir3_nir_lower_ubo_loads, so);
+ 
+    if (so->compiler->gen >= 7 &&
++       (s->info.stage == MESA_SHADER_FRAGMENT ||
++        !so->compiler->info->props.non_fs_descriptor_prefetch_quirk) &&
+        !(ir3_shader_debug & (IR3_DBG_NOPREAMBLE | IR3_DBG_NODESCPREFETCH)))
+       progress |= OPT(s, ir3_nir_opt_prefetch_descriptors, so);
+ 
+-- 
+GitLab
+
+
+From b0af69177f6a9f45f3fa273ffdba1fbadf965ce6 Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Thu, 29 Oct 2026 15:26:44 +0100
+Subject: [PATCH 5/6] ir3: Don't use early preamble with branches on a7xx gen1
+
+VS + early preamble + control flow in early preamble caused rendering
+corruptions when several draws with same pipeline ran back to back.
+A WFI between the draws, or removing control flow from the preamble
+fixed the issue. Proprietary driver doesn't control flow in early preamble.
+
+Fixes at least "The Witcher 3" rendering.
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h |  5 +++++
+ src/freedreno/common/freedreno_devices.py |  1 +
+ src/freedreno/ir3/ir3_legalize.c          | 10 ++++++++++
+ 3 files changed, 16 insertions(+)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index b13e52cfc22b..90a6bdcb7cf9 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -517,6 +517,11 @@ struct fd_dev_info {
+        */
+       bool non_fs_descriptor_prefetch_quirk;
+ 
++      /* On a7xx gen1 VS + early preamble + control flow in early preamble caused
++       * rendering corruptions when several draws with same pipeline ran back to back.
++       */
++      bool early_preamble_branch_quirk;
++
+       /* Whether SUBPASS_FENCE can be used as a lighter-weight GMEM-only
+        * UCHE invalidate and slice-local wait for by-region barriers.
+        */
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index bdb45148174e..312e1f0499b0 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -829,6 +829,7 @@ a7xx_gen1 = GPUProps(
+         fsr_attachment_linear_quirk = True,
+         s2en_index_ignores_alias_tex_quirk = True,
+         non_fs_descriptor_prefetch_quirk = True,
++        early_preamble_branch_quirk = True,
+         QCTDD08407086 = True,
+         QCTDD08517960 = True,
+     )
+diff --git a/src/freedreno/ir3/ir3_legalize.c b/src/freedreno/ir3/ir3_legalize.c
+index 8e8fe5e339d3..2634d87a0144 100644
+--- a/src/freedreno/ir3/ir3_legalize.c
++++ b/src/freedreno/ir3/ir3_legalize.c
+@@ -2522,6 +2522,7 @@ ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary,
+    bool gpr_in_preamble = false;
+    bool pred_in_preamble = false;
+    bool relative_in_preamble = false;
++   bool branch_in_preamble = false;
+    bool in_preamble = start_block != ir3_start_block(ir);
+    bool has_preamble = start_block != ir3_start_block(ir);
+ 
+@@ -2564,6 +2565,11 @@ ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary,
+              !(instr->dsts[0]->flags & IR3_REG_UNIFORM)) {
+             pred_in_preamble = true;
+          }
++
++         if (in_preamble && is_flow(instr) && instr->opc != OPC_SHPS &&
++             instr->opc != OPC_GETONE && instr->opc != OPC_SHPE) {
++            branch_in_preamble = true;
++         }
+       }
+    }
+ 
+@@ -2572,6 +2578,10 @@ ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary,
+       ir->compiler->info->props.has_early_preamble &&
+       !(ir3_shader_debug & IR3_DBG_NOEARLYPREAMBLE);
+ 
++   if (branch_in_preamble && so->early_preamble &&
++       ir->compiler->info->props.early_preamble_branch_quirk)
++      so->early_preamble = false;
++
+    if (relative_in_preamble && so->early_preamble &&
+        IR3_QUIRK(ctx->compiler, QCTDD10789828_no_a0_ep))
+       so->early_preamble = false;
+-- 
+GitLab
+
+
+From 938ecf59eff599129301caebdec7375cf6f394ea Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Thu, 29 Oct 2026 16:02:44 +0100
+Subject: [PATCH 6/6] ir3: Don't reuse GPRs for alias.tex groups on a7xx gen1
+
+On a7xx gen1 alias.tex gives wrong results when the alias registers
+are GPRs that the shader also uses, as happens when an alias group
+reuses the GPRs of some of its sources. The blob only uses r40+ for
+alias registers there.
+
+Fixes "Dirt Rally 2" and many other games.
+
+Assisted-by: LLM
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+---
+ src/freedreno/common/freedreno_dev_info.h | 7 +++++++
+ src/freedreno/common/freedreno_devices.py | 1 +
+ src/freedreno/ir3/ir3_alias.c             | 5 +++++
+ 3 files changed, 13 insertions(+)
+
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index 90a6bdcb7cf9..3ae8d14f151f 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -522,6 +522,13 @@ struct fd_dev_info {
+        */
+       bool early_preamble_branch_quirk;
+ 
++      /* On a7xx gen1 alias.tex gives wrong results when the alias registers
++       * are GPRs that the shader also uses, as happens when an alias group
++       * reuses the GPRs of some of its sources. The blob only uses r40+ for
++       * alias registers there.
++       */
++      bool alias_tex_no_gpr_reuse_quirk;
++
+       /* Whether SUBPASS_FENCE can be used as a lighter-weight GMEM-only
+        * UCHE invalidate and slice-local wait for by-region barriers.
+        */
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 312e1f0499b0..20e930836a86 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -830,6 +830,7 @@ a7xx_gen1 = GPUProps(
+         s2en_index_ignores_alias_tex_quirk = True,
+         non_fs_descriptor_prefetch_quirk = True,
+         early_preamble_branch_quirk = True,
++        alias_tex_no_gpr_reuse_quirk = True,
+         QCTDD08407086 = True,
+         QCTDD08517960 = True,
+     )
+diff --git a/src/freedreno/ir3/ir3_alias.c b/src/freedreno/ir3/ir3_alias.c
+index 52f58a9ffac3..d7bc4a62d2f0 100644
+--- a/src/freedreno/ir3/ir3_alias.c
++++ b/src/freedreno/ir3/ir3_alias.c
+@@ -379,8 +379,13 @@ alloc_alias(struct alias_table_state *state, struct ir3_instruction *instr,
+     */
+    unsigned best_reg = INVALID_REG;
+    unsigned best_num_reused = 0;
++   bool can_reuse =
++      !instr->block->shader->compiler->info->props.alias_tex_no_gpr_reuse_quirk;
+ 
+    foreach_src_in_alias_group_n (alias, alias_n, instr, first_src_n) {
++      if (!can_reuse)
++         break;
++
+       if (used_regs[alias_n] == INVALID_REG) {
+          /* No (free) GPR is used by this alias. */
+          continue;
+-- 
+GitLab
+
