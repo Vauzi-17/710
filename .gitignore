@@ -3,3 +3,4 @@ out/
 RELEASE_NOTES.md
 build.log
 __pycache__/
+.codegraph/
