@@ -39,7 +39,7 @@ diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/fr
 index b881e4f8b8d3..f2a487c597d9 100644
 --- a/src/freedreno/common/freedreno_dev_info.h
 +++ b/src/freedreno/common/freedreno_dev_info.h
-@@ -483,13 +483,6 @@ struct fd_dev_info {
+@@ -496,13 +496,6 @@ struct fd_dev_info {
        uint32_t max_texel_buffer_range_elements;
        uint32_t max_storage_buffer_range_bytes;
  
@@ -50,9 +50,10 @@ index b881e4f8b8d3..f2a487c597d9 100644
 -       */
 -      bool prefetch_sam_helpers_quirk;
 -
-       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
-       bool subpass_fence_cleans_resolve;
-    } props;
+       /* Whether resbase can be used. It doesn't exist on a6xx, and on
+        * a7xx gen1 it hangs the GPU, even when its result is unused.
+        */
+       bool has_resbase;
 diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
 index 7ab1706fd815..06ece3d90a7c 100644
 --- a/src/freedreno/common/freedreno_devices.py

@@ -8,7 +8,7 @@ idle storage, and release all entries at device destruction.
 ---
 --- a/src/freedreno/vulkan/tu_knl_kgsl.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
-@@ -384,6 +384,89 @@
+@@ -369,6 +369,89 @@
     safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
  }
  
@@ -23,8 +23,8 @@ idle storage, and release all entries at device destruction.
 +#define KGSL_IB_CACHE_MAX_BYTES (256ull * 1024 * 1024)
 +struct kgsl_ib_cache_entry {
 +   struct kgsl_ib_cache_entry *next;
-+   uint32_t handle, alias, flags;
-+   uint64_t size, iova, requested_size;
++   uint32_t handle, alias;
++   uint64_t flags, size, iova, requested_size;
 +};
 +
 +struct kgsl_ib_cache {
@@ -36,7 +36,7 @@ idle storage, and release all entries at device destruction.
 +
 +static bool
 +kgsl_ib_cache_take(struct tu_device *dev, uint64_t size, uint64_t align,
-+                   uint32_t flags, struct kgsl_ib_cache_entry *out)
++                   uint64_t flags, struct kgsl_ib_cache_entry *out)
 +{
 +   struct kgsl_ib_cache *cache = dev->kgsl_ib_cache;
 +   if (!cache)
@@ -98,34 +98,33 @@ idle storage, and release all entries at device destruction.
  static VkResult
  kgsl_bo_init(struct tu_device *dev,
               struct vk_object_base *base,
-@@ -445,10 +528,21 @@
+@@ -430,11 +513,22 @@
     if (flags & TU_BO_ALLOC_NO_32B_ROLLOVER)
-       req.flags |= KGSL_MEMFLAGS_FORCE_32BIT;
+       kgsl_flags |= KGSL_MEMFLAGS_FORCE_32BIT;
  
--   int ret;
--
--   ret = safe_ioctl(dev->physical_device->local_fd,
--                    IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);
 +   /* KGSL may normalize returned flags; key by the original request. */
-+   const uint32_t requested_flags = req.flags;
++   const uint64_t requested_flags = kgsl_flags;
 +   struct kgsl_ib_cache_entry cached = {};
 +   bool reused = !lazy_vma && !(flags & TU_BO_ALLOC_REPLAYABLE) &&
 +      kgsl_bo_needs_alias(dev, flags) &&
-+      kgsl_ib_cache_take(dev, size, align, req.flags, &cached);
++      kgsl_ib_cache_take(dev, size, align, kgsl_flags, &cached);
++
+    uint32_t id;
+    uint64_t mmapsize, gpuaddr;
+-   int ret;
 +   int ret = 0;
+ 
+-   if (kgsl_flags >> 32) {
 +   if (reused) {
-+      req.id = cached.handle;
-+      req.mmapsize = cached.size;
-+      req.gpuaddr = cached.iova;
-+   } else {
-+      ret = safe_ioctl(dev->physical_device->local_fd,
-+                       IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);
-+   }
-    if (ret) {
-       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                        "GPUMEM_ALLOC_ID failed (%s)", strerror(errno));
-@@ -464,6 +558,9 @@
-       .name = tu_debug_bos_add(dev, req.mmapsize, name),
++      id = cached.handle;
++      mmapsize = cached.size;
++      gpuaddr = cached.iova;
++   } else if (kgsl_flags >> 32) {
+       /* kgsl_gpumem_alloc_id only has a 32-bit flags field, which would
+        * silently drop flags such as KGSL_MEMFLAGS_FORCE_32BIT.
+        */
+@@ -493,6 +587,9 @@
+       .name = tu_debug_bos_add(dev, mmapsize, name),
        .refcnt = 1,
        .shared_fd = -1,
 +      .alias_handle = cached.alias,
@@ -134,7 +133,7 @@ idle storage, and release all entries at device destruction.
        .base = base,
     };
  
-@@ -475,7 +572,7 @@
+@@ -504,7 +601,7 @@
        result = kgsl_sparse_vma_map(dev, lazy_vma, bo, 0);
     } else if (flags & TU_BO_ALLOC_REPLAYABLE) {
        result = kgsl_bo_user_map(dev, bo, client_iova);
@@ -203,7 +202,7 @@ idle storage, and release all entries at device destruction.
  
     /* Virtual BO the GPU accesses this BO through, or 0 if none. */
     uint32_t alias_handle;
-+   uint32_t kgsl_alloc_flags;
++   uint64_t kgsl_alloc_flags;
 +   uint64_t kgsl_alloc_size;
  #endif
  
