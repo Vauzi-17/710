@@ -1,0 +1,239 @@
+From ec5a9a6d86133c45d3e42bd3583ba3ad9572c3a2 Mon Sep 17 00:00:00 2001
+From: Dhruv Mark Collins <mark@igalia.com>
+Date: Fri, 16 Oct 2026 10:26:55 +0000
+Subject: [PATCH] ir3: Remove texture descriptor prefetch support
+
+Nothing emits prefetch_sam_ir3 or prefetch_tex_ir3 now that only UBO
+descriptors are prefetched. Remove them along with the dummy sam handling
+in alias and legalize, including prefetch_sam_helpers_quirk, which only
+applied to the dummy sam.s2en.
+
+Signed-off-by: Dhruv Mark Collins <mark@igalia.com>
+Generated-by: LLM
+---
+ src/compiler/nir/nir_intrinsics.py        |  4 +--
+ src/freedreno/common/freedreno_dev_info.h |  7 -----
+ src/freedreno/common/freedreno_devices.py |  2 --
+ src/freedreno/ir3/ir3.h                   | 13 ++-------
+ src/freedreno/ir3/ir3_alias.c             |  3 --
+ src/freedreno/ir3/ir3_compiler_nir.c      | 32 ---------------------
+ src/freedreno/ir3/ir3_legalize.c          | 35 ++---------------------
+ 7 files changed, 6 insertions(+), 90 deletions(-)
+
+diff --git a/src/compiler/nir/nir_intrinsics.py b/src/compiler/nir/nir_intrinsics.py
+index dd46072e5c34..429aafb636ac 100644
+--- a/src/compiler/nir/nir_intrinsics.py
++++ b/src/compiler/nir/nir_intrinsics.py
+@@ -1751,9 +1751,7 @@ intrinsic("shuffle_up_uniform_ir3", src_comp=[0, 1], dest_comp=0,
+ intrinsic("shuffle_down_uniform_ir3", src_comp=[0, 1], dest_comp=0,
+           bit_sizes=src0, flags=[CAN_ELIMINATE])
+ 
+-# IR3-specific intrinsics for prefetching descriptors in preambles.
+-intrinsic("prefetch_sam_ir3", [1, 1], indices=[ACCESS], flags=[CAN_REORDER])
+-intrinsic("prefetch_tex_ir3", [1], indices=[ACCESS], flags=[CAN_REORDER])
++# IR3-specific intrinsic for prefetching UBO descriptors in preambles.
+ intrinsic("prefetch_ubo_ir3", [1], indices=[ACCESS], flags=[CAN_REORDER])
+ 
+ intrinsic("resbase_ir3", src_comp=[1], dest_comp=2, flags=[CAN_ELIMINATE, CAN_REORDER])
+diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
+index b881e4f8b8d3..f2a487c597d9 100644
+--- a/src/freedreno/common/freedreno_dev_info.h
++++ b/src/freedreno/common/freedreno_dev_info.h
+@@ -483,13 +483,6 @@ struct fd_dev_info {
+       uint32_t max_texel_buffer_range_elements;
+       uint32_t max_storage_buffer_range_bytes;
+ 
+-      /* There seems to be a HW bug where a dummy prefetch sam.s2en always
+-       * reads its src2 from fiber 0. This may cause faults when fiber 0 is a
+-       * helper and helpers are disabled. We work around this by keeping
+-       * helpers enabled until after such sam.s2en.
+-       */
+-      bool prefetch_sam_helpers_quirk;
+-
+       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
+       bool subpass_fence_cleans_resolve;
+    } props;
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 7ab1706fd815..06ece3d90a7c 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -810,8 +810,6 @@ a7xx_base = GPUProps(
+         max_texel_buffer_range_elements = 1 << 27,
+         max_storage_buffer_range_bytes = 1 << 27,
+ 
+-        prefetch_sam_helpers_quirk = True,
+-
+         QCTDD10204462 = True,
+         QCTDD11147232 = True,
+         QCTDD11183148 = True,
+diff --git a/src/freedreno/ir3/ir3.h b/src/freedreno/ir3/ir3.h
+index be5915e20f2b..91b08d5e1b38 100644
+--- a/src/freedreno/ir3/ir3.h
++++ b/src/freedreno/ir3/ir3.h
+@@ -190,7 +190,7 @@ typedef enum ir3_register_flags {
+    IR3_REG_FIRST_ALIAS = BIT(22),
+ 
+    /* Set for registers that should be ignored by all passes. For example, the
+-    * dummy src and dst of prefetch sam/ldc/resinfo.
++    * dummy dst of a prefetch ldc.
+     */
+    IR3_REG_DUMMY = BIT(23),
+ 
+@@ -3085,7 +3085,7 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
+    if (flags & IR3_INSTR_S2EN) {
+       nreg++;
+    }
+-   if (src0 || opc == OPC_SAM) {
++   if (src0) {
+       nreg++;
+    }
+    if (src1) {
+@@ -3103,12 +3103,6 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
+    }
+    if (src0) {
+       __ssa_src(sam, src0, 0);
+-   } else if (opc == OPC_SAM) {
+-      /* Create a dummy shared source for the coordinate, for the prefetch
+-       * case. It needs to be shared so that we don't accidentally disable early
+-       * preamble, and this is what the blob does.
+-       */
+-      ir3_src_create(sam, regid(48, 0), IR3_REG_SHARED | IR3_REG_DUMMY);
+    }
+    if (src1) {
+       __ssa_src(sam, src1, 0);
+@@ -3443,7 +3437,4 @@ unsigned ir3_required_delay(struct ir3_legalize_state *state,
+                             struct ir3_compiler *compiler,
+                             struct ir3_instruction *instr);
+ 
+-bool ir3_prefetch_sam_needs_helpers(struct ir3_compiler *compiler,
+-                                    struct ir3_instruction *sam);
+-
+ #endif /* IR3_H_ */
+diff --git a/src/freedreno/ir3/ir3_alias.c b/src/freedreno/ir3/ir3_alias.c
+index 5e925daf2671..19f3f7dd4634 100644
+--- a/src/freedreno/ir3/ir3_alias.c
++++ b/src/freedreno/ir3/ir3_alias.c
+@@ -15,9 +15,6 @@ supports_alias_srcs(struct ir3_instruction *instr)
+       return false;
+    if (is_tex_shuffle(instr))
+       return false;
+-   /* Descriptor prefetches don't support alias.tex. */
+-   if (instr->opc == OPC_SAM && has_dummy_dst(instr))
+-      return false;
+    /* Seems to not always work properly. Blob disables it as well. */
+    if (instr->opc == OPC_ISAM && (instr->flags & IR3_INSTR_IMM_OFFSET))
+       return false;
+diff --git a/src/freedreno/ir3/ir3_compiler_nir.c b/src/freedreno/ir3/ir3_compiler_nir.c
+index 49b4bdef3ecb..c401288b797d 100644
+--- a/src/freedreno/ir3/ir3_compiler_nir.c
++++ b/src/freedreno/ir3/ir3_compiler_nir.c
+@@ -3482,38 +3482,6 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
+       load->push_consts.src_size = nir_intrinsic_range(intr);
+       break;
+    }
+-   case nir_intrinsic_prefetch_sam_ir3: {
+-      struct tex_src_info info =
+-         get_bindless_samp_src(ctx, &intr->src[0], &intr->src[1], NULL, NULL);
+-      struct ir3_instruction *sam =
+-         emit_sam(ctx, OPC_SAM, info, TYPE_F32, 0b1111, NULL, NULL);
+-
+-      make_dst_dummy(sam);
+-      array_insert(ctx->block, ctx->block->keeps, sam);
+-
+-      if (ctx->so->type == MESA_SHADER_FRAGMENT &&
+-          ir3_prefetch_sam_needs_helpers(ctx->compiler, sam)) {
+-         ctx->so->need_pixlod = true;
+-      }
+-
+-      break;
+-   }
+-   case nir_intrinsic_prefetch_tex_ir3: {
+-      struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[0])[0];
+-      struct ir3_instruction *resinfo = ir3_RESINFO(b, idx, 0);
+-      resinfo->cat6.iim_val = 1;
+-      resinfo->cat6.d = 1;
+-      resinfo->cat6.type = TYPE_U32;
+-      resinfo->cat6.typed = false;
+-
+-      ir3_handle_bindless_cat6(resinfo, intr->src[0]);
+-      if (resinfo->flags & IR3_INSTR_B)
+-         ctx->so->bindless_tex = true;
+-
+-      make_dst_dummy(resinfo);
+-      array_insert(ctx->block, ctx->block->keeps, resinfo);
+-      break;
+-   }
+    case nir_intrinsic_prefetch_ubo_ir3: {
+       struct ir3_instruction *offset = create_immed(b, 0);
+       struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[0])[0];
+diff --git a/src/freedreno/ir3/ir3_legalize.c b/src/freedreno/ir3/ir3_legalize.c
+index 8efa5d94a0f2..8abc96990ccb 100644
+--- a/src/freedreno/ir3/ir3_legalize.c
++++ b/src/freedreno/ir3/ir3_legalize.c
+@@ -252,9 +252,9 @@ sync_update(struct ir3_legalize_state *state, struct ir3_compiler *compiler,
+       }
+    }
+ 
+-   if (is_tex_or_prefetch(n) && !has_dummy_dst(n)) {
++   if (is_tex_or_prefetch(n)) {
+       regmask_set(&state->needs_sy, n->dsts[0]);
+-   } else if ((n->opc == OPC_RESINFO || n->opc == OPC_RESBASE) && !has_dummy_dst(n)) {
++   } else if (n->opc == OPC_RESINFO || n->opc == OPC_RESBASE) {
+       regmask_set(&state->needs_ss, n->dsts[0]);
+    } else if (is_load(n)) {
+       if (is_local_mem_load(n))
+@@ -848,7 +848,7 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
+          ctx->has_tex_prefetch = true;
+       }
+ 
+-      if (n->opc == OPC_RESINFO && !has_dummy_dst(n)) {
++      if (n->opc == OPC_RESINFO) {
+          ir3_update_legalize_state(state, ctx->compiler, n);
+ 
+          n = ir3_NOP(&build);
+@@ -1626,17 +1626,6 @@ dbg_expand_rpt(struct ir3 *ir)
+    }
+ }
+ 
+-bool
+-ir3_prefetch_sam_needs_helpers(struct ir3_compiler *compiler,
+-                               struct ir3_instruction *sam)
+-{
+-   assert(sam->opc == OPC_SAM);
+-   assert(has_dummy_dst(sam));
+-
+-   return compiler->info->props.prefetch_sam_helpers_quirk &&
+-          (sam->flags & IR3_INSTR_S2EN);
+-}
+-
+ struct ir3_mark_helpers_data {
+    bool valid;
+    regmask_t needs_helpers;
+@@ -1684,24 +1673,6 @@ instr_mark_helpers(struct ir3_compiler *compiler,
+    case OPC_DSY:
+    case OPC_DSXPP_1:
+    case OPC_DSYPP_1: {
+-      if (instr->opc == OPC_SAM && has_dummy_dst(instr)) {
+-         if (ir3_prefetch_sam_needs_helpers(compiler, instr)) {
+-            /* Prefetch sam.s2en erroneously reads it src2 from fiber 0. To
+-             * ensure its src2 is available even when fiber 0 is a helper, we
+-             * should keep helpers enabled. We could try to track src2 here but
+-             * this complicates the code below. Just mark the instruction
+-             * itself. Since (eq) is illegal in the preamble it will propagate
+-             * to the start of the main shader anyway.
+-             */
+-            instr->flags |= IR3_INSTR_NEEDS_HELPERS;
+-         }
+-
+-         /* sam requires helper invocations except for dummy prefetch
+-          * instructions.
+-          */
+-         return;
+-      }
+-
+       /* These instructions don't use helpers themselves but have a src that
+        * needs to be calculated using helpers (e.g., the coordinates used to
+        * calculate derivatives). Mark the src register as needing helpers so
+-- 
+GitLab
+

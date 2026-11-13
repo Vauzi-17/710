@@ -1,0 +1,275 @@
+From 7c14092ffb50622f78f9c466d92f2a6c0fce71a7 Mon Sep 17 00:00:00 2001
+From: Dhruv Mark Collins <mark@igalia.com>
+Date: Fri, 16 Oct 2026 10:26:55 +0000
+Subject: [PATCH] ir3: Only prefetch UBO descriptors
+
+Prefetching texture and sampler descriptors in the preamble costs more
+than it saves on A750. Each one adds a dummy sam or resinfo to a preamble
+that runs once per draw, and once per bin under GMEM.
+
+On a Half-Life: Alyx trace, prefetching only UBO descriptors is 1.9%
+faster than the current default and matches disabling the prefetch
+entirely. Two other Alyx scenes and Stray were neutral within noise, and
+the UBO prefetches did not cost anything measurable, so they are kept.
+
+Signed-off-by: Dhruv Mark Collins <mark@igalia.com>
+Generated-by: LLM
+---
+ src/freedreno/ir3/ir3_nir_opt_preamble.c | 190 ++++-------------------
+ 1 file changed, 29 insertions(+), 161 deletions(-)
+
+diff --git a/src/freedreno/ir3/ir3_nir_opt_preamble.c b/src/freedreno/ir3/ir3_nir_opt_preamble.c
+index 53bce135de50..f623c2bc179e 100644
+--- a/src/freedreno/ir3/ir3_nir_opt_preamble.c
++++ b/src/freedreno/ir3/ir3_nir_opt_preamble.c
+@@ -410,22 +410,6 @@ find_insert_block(nir_instr *instr, nir_block *dflt)
+    return NULL;
+ }
+ 
+-static nir_block *
+-find_insert_block_for_defs(nir_def *defs[], unsigned n)
+-{
+-   struct find_insert_block_state state = {
+-      .insert_block = NULL,
+-   };
+-
+-   for (unsigned i = 0; i < n; i++) {
+-      if (!find_dominated_block(nir_def_block(defs[i]), &state)) {
+-         return NULL;
+-      }
+-   }
+-
+-   return state.insert_block;
+-}
+-
+ static bool
+ dominates(const nir_instr *old_instr, const nir_instr *new_instr)
+ {
+@@ -521,47 +505,17 @@ ir3_rematerialize_def_for_preamble(nir_builder *b, nir_def *def,
+ }
+ 
+ 
+-static void
+-get_descriptors(nir_instr *instr, nir_def **descs)
++static nir_def *
++get_ubo_descriptor(nir_instr *instr)
+ {
+-   if (instr->type == nir_instr_type_tex) {
+-      nir_tex_instr *tex = nir_instr_as_tex(instr);
+-      /* TODO: handle non-bindless tex instructions. These are more complicated,
+-       * because of the implicit addition in the instruction.
+-       */
+-      int texture_index =
+-         nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+-      int sampler_index =
+-         nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle);
+-      if (texture_index >= 0)
+-         descs[0] = tex->src[texture_index].src.ssa;
+-      if (sampler_index >= 0)
+-         descs[1] = tex->src[sampler_index].src.ssa;
+-   } else if (instr->type == nir_instr_type_intrinsic) {
+-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+-      switch (intrin->intrinsic) {
+-      case nir_intrinsic_load_ssbo:
+-      case nir_intrinsic_load_ubo:
+-      case nir_intrinsic_ssbo_atomic:
+-      case nir_intrinsic_ssbo_atomic_swap:
+-      case nir_intrinsic_get_ssbo_size:
+-      case nir_intrinsic_image_load:
+-      case nir_intrinsic_bindless_image_load:
+-      case nir_intrinsic_image_store:
+-      case nir_intrinsic_bindless_image_store:
+-      case nir_intrinsic_image_atomic:
+-      case nir_intrinsic_bindless_image_atomic:
+-      case nir_intrinsic_image_size:
+-      case nir_intrinsic_bindless_image_size:
+-         descs[0] = intrin->src[0].ssa;
+-         break;
+-      case nir_intrinsic_store_ssbo:
+-         descs[0] = intrin->src[1].ssa;
+-         break;
+-      default:
+-         break;
+-      }
+-   }
++   if (instr->type != nir_instr_type_intrinsic)
++      return NULL;
++
++   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
++   if (intrin->intrinsic != nir_intrinsic_load_ubo)
++      return NULL;
++
++   return intrin->src[0].ssa;
+ }
+ 
+ static bool
+@@ -616,91 +570,22 @@ add_prefetch(struct prefetches *prefetches, nir_def *def)
+    prefetches->prefetches[prefetches->num_prefetches++] = def;
+ }
+ 
+-struct prefetch_state {
+-   struct prefetches tex, sampler;
+-};
+-
+ static bool
+-emit_descriptor_prefetch(nir_builder *b, nir_instr *instr, nir_def **descs,
+-                         struct prefetch_state *state, bool can_speculate)
++emit_descriptor_prefetch(nir_builder *b, nir_def *desc,
++                         struct prefetches *prefetches, bool can_speculate)
+ {
+-   nir_block *insert_block = nir_def_block(descs[0]);
+-
+    enum gl_access_qualifier access = can_speculate ? ACCESS_CAN_SPECULATE : 0;
+ 
+-   if (descs[1]) {
+-      insert_block = find_insert_block_for_defs(descs, 2);
+-
+-      /* Since the preamble control flow was reconstructed from the original
+-       * one, and the two descriptor defs were used by the same instruction, we
+-       * must be able to find a legal place to insert the prefetch.
+-       */
+-      assert(insert_block);
+-   }
+-
+-   b->cursor = nir_after_block(insert_block);
+-
+-   if (instr->type == nir_instr_type_tex) {
+-      nir_tex_instr *tex = nir_instr_as_tex(instr);
+-      int sampler_index =
+-         nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle);
+-      int texture_index =
+-         nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+-
+-      /* For texture instructions, prefetch if at least one source hasn't been
+-       * prefetched already. For example, the same sampler may be used with
+-       * different textures, and we still want to prefetch the texture
+-       * descriptor if we've already prefetched the sampler descriptor.
+-       */
+-
+-      bool tex_already_prefetched = is_already_prefetched(&state->tex, descs[0]);
+-
+-      if (!tex_already_prefetched &&
+-          state->tex.num_prefetches == MAX_PREFETCHES)
+-         return false;
+-
+-      assert(texture_index >= 0);
+-      if (sampler_index >= 0) {
+-         bool sampler_already_prefetched =
+-            is_already_prefetched(&state->sampler, descs[1]);
+-
+-         if (!sampler_already_prefetched &&
+-             state->sampler.num_prefetches == MAX_PREFETCHES)
+-            return false;
+-
+-         if (tex_already_prefetched && sampler_already_prefetched)
+-            return false;
+-
+-         if (!tex_already_prefetched)
+-            add_prefetch(&state->tex, descs[0]);
+-         if (!sampler_already_prefetched)
+-            add_prefetch(&state->sampler, descs[1]);
+-
+-         nir_prefetch_sam_ir3(b, descs[0], descs[1], .access = access);
+-      } else {
+-         if (tex_already_prefetched)
+-            return false;
+-
+-         add_prefetch(&state->tex, descs[0]);
+-         nir_prefetch_tex_ir3(b, descs[0], .access = access);
+-      }
+-   } else {
+-      assert(instr->type == nir_instr_type_intrinsic);
+-
+-      if (state->tex.num_prefetches == MAX_PREFETCHES)
+-         return false;
++   if (prefetches->num_prefetches == MAX_PREFETCHES)
++      return false;
+ 
+-      if (is_already_prefetched(&state->tex, descs[0]))
+-         return false;
++   if (is_already_prefetched(prefetches, desc))
++      return false;
+ 
+-      add_prefetch(&state->tex, descs[0]);
++   add_prefetch(prefetches, desc);
+ 
+-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+-      if (intrin->intrinsic == nir_intrinsic_load_ubo)
+-         nir_prefetch_ubo_ir3(b, descs[0], .access = access);
+-      else
+-         nir_prefetch_tex_ir3(b, descs[0], .access = access);
+-   }
++   b->cursor = nir_after_block(nir_def_block(desc));
++   nir_prefetch_ubo_ir3(b, desc, .access = access);
+ 
+    return true;
+ }
+@@ -734,7 +619,7 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+    nir_function_impl *preamble = main->preamble ? main->preamble->impl : NULL;
+    nir_builder b;
+    bool progress = false;
+-   struct prefetch_state state = {};
++   struct prefetches prefetches = {};
+ 
+    nir_def **preamble_defs =
+       calloc(const_state->allocs.consts[IR3_CONST_ALLOC_PREAMBLE].size_vec4 * 4,
+@@ -764,26 +649,15 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+ 
+    nir_foreach_block (block, main) {
+       nir_foreach_instr (instr, block) {
+-         nir_def *descs[2] = { NULL, NULL };
+-         nir_def *preamble_descs[2] = { NULL, NULL };
+-         get_descriptors(instr, descs);
++         nir_def *desc = get_ubo_descriptor(instr);
+ 
+-         /* Bail unless we found at least one bindless descriptor */
+-         if (!(should_prefetch_descriptor(descs[0]) ||
+-               should_prefetch_descriptor(descs[1])))
++         if (!should_prefetch_descriptor(desc))
+             continue;
+ 
+-         /* Each descriptor must be rematerializable */
+-         if (descs[0] &&
+-             !ir3_def_is_rematerializable_for_preamble(descs[0], preamble_defs))
+-            continue;
+-         if (descs[1] &&
+-             !ir3_def_is_rematerializable_for_preamble(descs[1], preamble_defs))
++         if (!ir3_def_is_rematerializable_for_preamble(desc, preamble_defs))
+             continue;
+ 
+-         bool is_speculatable =
+-            (!descs[0] || is_descriptor_prefetch_speculatable(descs[0])) &&
+-            (!descs[1] || is_descriptor_prefetch_speculatable(descs[1]));
++         bool is_speculatable = is_descriptor_prefetch_speculatable(desc);
+ 
+          /* If the preamble hasn't been created then this descriptor isn't a
+           * duplicate and we will definitely insert an instruction, so create
+@@ -826,20 +700,14 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+           * blocks. This is common because we emit the bindless_resource_ir3
+           * intrinsic right before the access.
+           */
+-         for (unsigned i = 0; i < 2; i++) {
+-            if (!descs[i])
+-               continue;
+-
+-            preamble_descs[i] =
+-               ir3_rematerialize_def_for_preamble(&b, descs[i], &instr_set,
+-                                                  preamble_defs);
+-         }
++         nir_def *preamble_desc =
++            ir3_rematerialize_def_for_preamble(&b, desc, &instr_set,
++                                               preamble_defs);
+ 
+-         progress |= emit_descriptor_prefetch(&b, instr, preamble_descs, &state,
++         progress |= emit_descriptor_prefetch(&b, preamble_desc, &prefetches,
+                                               is_speculatable);
+ 
+-         if (state.sampler.num_prefetches == MAX_PREFETCHES &&
+-             state.tex.num_prefetches == MAX_PREFETCHES)
++         if (prefetches.num_prefetches == MAX_PREFETCHES)
+             goto finished;
+       }
+    }
+-- 
+GitLab
+
