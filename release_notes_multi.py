@@ -43,8 +43,8 @@ KNOWN_VARIANTS = {
         "variant_title": "Regular / Universal",
         "patch_title": "Regular / Universal (Upstream)",
         "description": (
-            "Universal build based directly on upstream Mesa for broad compatibility "
-            "across different emulators and native applications."
+            "Upstream Mesa build with minimal patches for general use across "
+            "emulators and native Android apps."
         ),
     },
     "sw": {
@@ -52,8 +52,8 @@ KNOWN_VARIANTS = {
         "variant_title": "Switch",
         "patch_title": "Switch (SW)",
         "description": (
-            "Specifically tuned and optimized for Nintendo Switch emulators "
-            "(Eden, etc.) on Adreno 7xx and 8xx."
+            "Build with patches for Nintendo Switch emulators (Eden, etc.), "
+            "including sysmem defaults, BGRA swap, and LRZ rescue."
         ),
     },
     "win": {
@@ -61,8 +61,8 @@ KNOWN_VARIANTS = {
         "variant_title": "Winlator",
         "patch_title": "Winlator / Windows (WIN)",
         "description": (
-            "Specifically tuned and optimized for Winlator and Windows/DirectX "
-            "emulation environments on Android."
+            "Build with patches for Winlator and DXVK/vkd3d-proton, including "
+            "cached-coherent staging, sample shading gating, and UBO-only descriptor prefetch."
         ),
     },
     "unified": {
@@ -70,8 +70,8 @@ KNOWN_VARIANTS = {
         "variant_title": "Unified",
         "patch_title": "Unified (UNIFIED)",
         "description": (
-            "All-in-one build combining Switch, Winlator, and Vita3K patches "
-            "with safe defaults for cross-emulator use."
+            "Combined build merging the Switch, Winlator, and Vita3K patch sets "
+            "into a single driver."
         ),
     },
     "vita": {
@@ -79,8 +79,8 @@ KNOWN_VARIANTS = {
         "variant_title": "Vita3K",
         "patch_title": "Vita3K (VITA)",
         "description": (
-            "Specifically tuned and optimized for Vita3K emulation with raster-order "
-            "barrier, LRZ, primitive mode, and vertex buffer optimizations."
+            "Build with patches targeting Vita3K, adding raster-order barrier bypass, "
+            "prim-mode control, non-sticky LRZ stencil handling, and vertex buffer deduplication."
         ),
     },
 }
