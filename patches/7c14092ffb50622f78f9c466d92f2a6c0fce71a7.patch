@@ -19,10 +19,10 @@ Generated-by: LLM
  1 file changed, 29 insertions(+), 161 deletions(-)
 
 diff --git a/src/freedreno/ir3/ir3_nir_opt_preamble.c b/src/freedreno/ir3/ir3_nir_opt_preamble.c
-index 53bce135de50..f623c2bc179e 100644
+index 8e356db..fa82a0e 100644
 --- a/src/freedreno/ir3/ir3_nir_opt_preamble.c
 +++ b/src/freedreno/ir3/ir3_nir_opt_preamble.c
-@@ -410,22 +410,6 @@ find_insert_block(nir_instr *instr, nir_block *dflt)
+@@ -409,22 +409,6 @@ find_insert_block(nir_instr *instr, nir_block *dflt)
     return NULL;
  }
  
@@ -45,7 +45,7 @@ index 53bce135de50..f623c2bc179e 100644
  static bool
  dominates(const nir_instr *old_instr, const nir_instr *new_instr)
  {
-@@ -521,47 +505,17 @@ ir3_rematerialize_def_for_preamble(nir_builder *b, nir_def *def,
+@@ -520,47 +504,17 @@ ir3_rematerialize_def_for_preamble(nir_builder *b, nir_def *def,
  }
  
  
@@ -103,19 +103,21 @@ index 53bce135de50..f623c2bc179e 100644
  }
  
  static bool
-@@ -616,91 +570,22 @@ add_prefetch(struct prefetches *prefetches, nir_def *def)
+@@ -616,97 +570,23 @@ add_prefetch(struct prefetches *prefetches, nir_def *def)
     prefetches->prefetches[prefetches->num_prefetches++] = def;
  }
  
 -struct prefetch_state {
 -   struct prefetches tex, sampler;
+-   unsigned max_prefetches;
 -};
 -
  static bool
 -emit_descriptor_prefetch(nir_builder *b, nir_instr *instr, nir_def **descs,
 -                         struct prefetch_state *state, bool can_speculate)
 +emit_descriptor_prefetch(nir_builder *b, nir_def *desc,
-+                         struct prefetches *prefetches, bool can_speculate)
++                         struct prefetches *prefetches,
++                         unsigned max_prefetches, bool can_speculate)
  {
 -   nir_block *insert_block = nir_def_block(descs[0]);
 -
@@ -149,7 +151,7 @@ index 53bce135de50..f623c2bc179e 100644
 -      bool tex_already_prefetched = is_already_prefetched(&state->tex, descs[0]);
 -
 -      if (!tex_already_prefetched &&
--          state->tex.num_prefetches == MAX_PREFETCHES)
+-          state->tex.num_prefetches == state->max_prefetches)
 -         return false;
 -
 -      assert(texture_index >= 0);
@@ -158,7 +160,7 @@ index 53bce135de50..f623c2bc179e 100644
 -            is_already_prefetched(&state->sampler, descs[1]);
 -
 -         if (!sampler_already_prefetched &&
--             state->sampler.num_prefetches == MAX_PREFETCHES)
+-             state->sampler.num_prefetches == state->max_prefetches)
 -            return false;
 -
 -         if (tex_already_prefetched && sampler_already_prefetched)
@@ -180,20 +182,25 @@ index 53bce135de50..f623c2bc179e 100644
 -   } else {
 -      assert(instr->type == nir_instr_type_intrinsic);
 -
--      if (state->tex.num_prefetches == MAX_PREFETCHES)
+-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+-      /* UBO descriptors share the cache with sampler descriptors. */
+-      struct prefetches *prefetches =
+-         intrin->intrinsic == nir_intrinsic_load_ubo ? &state->sampler
+-                                                     : &state->tex;
+-
+-      if (prefetches->num_prefetches == state->max_prefetches)
 -         return false;
-+   if (prefetches->num_prefetches == MAX_PREFETCHES)
++   if (prefetches->num_prefetches == max_prefetches)
 +      return false;
  
--      if (is_already_prefetched(&state->tex, descs[0]))
+-      if (is_already_prefetched(prefetches, descs[0]))
 -         return false;
 +   if (is_already_prefetched(prefetches, desc))
 +      return false;
  
--      add_prefetch(&state->tex, descs[0]);
+-      add_prefetch(prefetches, descs[0]);
 +   add_prefetch(prefetches, desc);
  
--      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
 -      if (intrin->intrinsic == nir_intrinsic_load_ubo)
 -         nir_prefetch_ubo_ir3(b, descs[0], .access = access);
 -      else
@@ -204,16 +211,18 @@ index 53bce135de50..f623c2bc179e 100644
  
     return true;
  }
-@@ -734,7 +619,7 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+@@ -752,9 +632,7 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
     nir_function_impl *preamble = main->preamble ? main->preamble->impl : NULL;
     nir_builder b;
     bool progress = false;
--   struct prefetch_state state = {};
+-   struct prefetch_state state = {
+-      .max_prefetches = max_prefetches,
+-   };
 +   struct prefetches prefetches = {};
  
     nir_def **preamble_defs =
        calloc(const_state->allocs.consts[IR3_CONST_ALLOC_PREAMBLE].size_vec4 * 4,
-@@ -764,26 +649,15 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+@@ -784,26 +662,15 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
  
     nir_foreach_block (block, main) {
        nir_foreach_instr (instr, block) {
@@ -244,7 +253,7 @@ index 53bce135de50..f623c2bc179e 100644
  
           /* If the preamble hasn't been created then this descriptor isn't a
            * duplicate and we will definitely insert an instruction, so create
-@@ -826,20 +700,14 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
+@@ -846,20 +713,14 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
            * blocks. This is common because we emit the bindless_resource_ir3
            * intrinsic right before the access.
            */
@@ -261,15 +270,13 @@ index 53bce135de50..f623c2bc179e 100644
 +                                               preamble_defs);
  
 -         progress |= emit_descriptor_prefetch(&b, instr, preamble_descs, &state,
+-                                              is_speculatable);
 +         progress |= emit_descriptor_prefetch(&b, preamble_desc, &prefetches,
-                                               is_speculatable);
++                                              max_prefetches, is_speculatable);
  
--         if (state.sampler.num_prefetches == MAX_PREFETCHES &&
--             state.tex.num_prefetches == MAX_PREFETCHES)
-+         if (prefetches.num_prefetches == MAX_PREFETCHES)
+-         if (state.sampler.num_prefetches == state.max_prefetches &&
+-             state.tex.num_prefetches == state.max_prefetches)
++         if (prefetches.num_prefetches == max_prefetches)
              goto finished;
        }
     }
--- 
-GitLab
-

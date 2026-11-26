@@ -21,10 +21,10 @@ Generated-by: LLM
  7 files changed, 6 insertions(+), 90 deletions(-)
 
 diff --git a/src/compiler/nir/nir_intrinsics.py b/src/compiler/nir/nir_intrinsics.py
-index dd46072e5c34..429aafb636ac 100644
+index bfb8886..ae35097 100644
 --- a/src/compiler/nir/nir_intrinsics.py
 +++ b/src/compiler/nir/nir_intrinsics.py
-@@ -1751,9 +1751,7 @@ intrinsic("shuffle_up_uniform_ir3", src_comp=[0, 1], dest_comp=0,
+@@ -1759,9 +1759,7 @@ intrinsic("shuffle_up_uniform_ir3", src_comp=[0, 1], dest_comp=0,
  intrinsic("shuffle_down_uniform_ir3", src_comp=[0, 1], dest_comp=0,
            bit_sizes=src0, flags=[CAN_ELIMINATE])
  
@@ -36,10 +36,10 @@ index dd46072e5c34..429aafb636ac 100644
  
  intrinsic("resbase_ir3", src_comp=[1], dest_comp=2, flags=[CAN_ELIMINATE, CAN_REORDER])
 diff --git a/src/freedreno/common/freedreno_dev_info.h b/src/freedreno/common/freedreno_dev_info.h
-index b881e4f8b8d3..f2a487c597d9 100644
+index efef3cb..b2d4d34 100644
 --- a/src/freedreno/common/freedreno_dev_info.h
 +++ b/src/freedreno/common/freedreno_dev_info.h
-@@ -483,13 +483,6 @@ struct fd_dev_info {
+@@ -501,13 +501,6 @@ struct fd_dev_info {
        uint32_t max_texel_buffer_range_elements;
        uint32_t max_storage_buffer_range_bytes;
  
@@ -50,24 +50,24 @@ index b881e4f8b8d3..f2a487c597d9 100644
 -       */
 -      bool prefetch_sam_helpers_quirk;
 -
-       /* On a750+ SUBPASS_FENCE also implicitly does CCU_RESOLVE_CLEAN */
-       bool subpass_fence_cleans_resolve;
-    } props;
+       /* How many descriptors of each kind (texture/SSBO, sampler/UBO) ir3 may
+        * prefetch in the preamble of a fragment shader, of a shader of any
+        * other stage, and of a binning VS (which runs without a FS, so it
 diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
-index 7ab1706fd815..06ece3d90a7c 100644
+index 34e6e61..0c779f8 100644
 --- a/src/freedreno/common/freedreno_devices.py
 +++ b/src/freedreno/common/freedreno_devices.py
-@@ -810,8 +810,6 @@ a7xx_base = GPUProps(
+@@ -800,8 +800,6 @@ a7xx_base = GPUProps(
          max_texel_buffer_range_elements = 1 << 27,
          max_storage_buffer_range_bytes = 1 << 27,
  
 -        prefetch_sam_helpers_quirk = True,
 -
-         QCTDD10204462 = True,
-         QCTDD11147232 = True,
-         QCTDD11183148 = True,
+         # Measured on a740, a750 and a830.
+         max_desc_prefetches_fs = 16,
+         max_desc_prefetches_non_fs = 16,
 diff --git a/src/freedreno/ir3/ir3.h b/src/freedreno/ir3/ir3.h
-index be5915e20f2b..91b08d5e1b38 100644
+index e9bd341..46784df 100644
 --- a/src/freedreno/ir3/ir3.h
 +++ b/src/freedreno/ir3/ir3.h
 @@ -190,7 +190,7 @@ typedef enum ir3_register_flags {
@@ -79,7 +79,17 @@ index be5915e20f2b..91b08d5e1b38 100644
      */
     IR3_REG_DUMMY = BIT(23),
  
-@@ -3085,7 +3085,7 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
+@@ -2151,8 +2151,7 @@ is_ss_producer(struct ir3_instruction *instr)
+    if (instr->block->in_early_preamble && writes_addr1(instr))
+       return true;
+ 
+-   if ((instr->opc == OPC_RESINFO || instr->opc == OPC_RESBASE) &&
+-       !has_dummy_dst(instr)) {
++   if (instr->opc == OPC_RESINFO || instr->opc == OPC_RESBASE) {
+       return true;
+    }
+ 
+@@ -3099,7 +3098,7 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
     if (flags & IR3_INSTR_S2EN) {
        nreg++;
     }
@@ -88,7 +98,7 @@ index be5915e20f2b..91b08d5e1b38 100644
        nreg++;
     }
     if (src1) {
-@@ -3103,12 +3103,6 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
+@@ -3117,12 +3116,6 @@ ir3_SAM(struct ir3_builder *build, opc_t opc, type_t type, unsigned wrmask,
     }
     if (src0) {
        __ssa_src(sam, src0, 0);
@@ -101,7 +111,7 @@ index be5915e20f2b..91b08d5e1b38 100644
     }
     if (src1) {
        __ssa_src(sam, src1, 0);
-@@ -3443,7 +3437,4 @@ unsigned ir3_required_delay(struct ir3_legalize_state *state,
+@@ -3460,7 +3453,4 @@ unsigned ir3_required_delay(struct ir3_legalize_state *state,
                              struct ir3_compiler *compiler,
                              struct ir3_instruction *instr);
  
@@ -110,7 +120,7 @@ index be5915e20f2b..91b08d5e1b38 100644
 -
  #endif /* IR3_H_ */
 diff --git a/src/freedreno/ir3/ir3_alias.c b/src/freedreno/ir3/ir3_alias.c
-index 5e925daf2671..19f3f7dd4634 100644
+index 6f0cdbd..3e06e05 100644
 --- a/src/freedreno/ir3/ir3_alias.c
 +++ b/src/freedreno/ir3/ir3_alias.c
 @@ -15,9 +15,6 @@ supports_alias_srcs(struct ir3_instruction *instr)
@@ -124,10 +134,10 @@ index 5e925daf2671..19f3f7dd4634 100644
     if (instr->opc == OPC_ISAM && (instr->flags & IR3_INSTR_IMM_OFFSET))
        return false;
 diff --git a/src/freedreno/ir3/ir3_compiler_nir.c b/src/freedreno/ir3/ir3_compiler_nir.c
-index 49b4bdef3ecb..c401288b797d 100644
+index e17cd46..aad6506 100644
 --- a/src/freedreno/ir3/ir3_compiler_nir.c
 +++ b/src/freedreno/ir3/ir3_compiler_nir.c
-@@ -3482,38 +3482,6 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
+@@ -3449,38 +3449,6 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
        load->push_consts.src_size = nir_intrinsic_range(intr);
        break;
     }
@@ -167,22 +177,10 @@ index 49b4bdef3ecb..c401288b797d 100644
        struct ir3_instruction *offset = create_immed(b, 0);
        struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[0])[0];
 diff --git a/src/freedreno/ir3/ir3_legalize.c b/src/freedreno/ir3/ir3_legalize.c
-index 8efa5d94a0f2..8abc96990ccb 100644
+index 4323b52..5bd8654 100644
 --- a/src/freedreno/ir3/ir3_legalize.c
 +++ b/src/freedreno/ir3/ir3_legalize.c
-@@ -252,9 +252,9 @@ sync_update(struct ir3_legalize_state *state, struct ir3_compiler *compiler,
-       }
-    }
- 
--   if (is_tex_or_prefetch(n) && !has_dummy_dst(n)) {
-+   if (is_tex_or_prefetch(n)) {
-       regmask_set(&state->needs_sy, n->dsts[0]);
--   } else if ((n->opc == OPC_RESINFO || n->opc == OPC_RESBASE) && !has_dummy_dst(n)) {
-+   } else if (n->opc == OPC_RESINFO || n->opc == OPC_RESBASE) {
-       regmask_set(&state->needs_ss, n->dsts[0]);
-    } else if (is_load(n)) {
-       if (is_local_mem_load(n))
-@@ -848,7 +848,7 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
+@@ -840,7 +840,7 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
           ctx->has_tex_prefetch = true;
        }
  
@@ -191,7 +189,7 @@ index 8efa5d94a0f2..8abc96990ccb 100644
           ir3_update_legalize_state(state, ctx->compiler, n);
  
           n = ir3_NOP(&build);
-@@ -1626,17 +1626,6 @@ dbg_expand_rpt(struct ir3 *ir)
+@@ -1618,17 +1618,6 @@ dbg_expand_rpt(struct ir3 *ir)
     }
  }
  
@@ -209,7 +207,7 @@ index 8efa5d94a0f2..8abc96990ccb 100644
  struct ir3_mark_helpers_data {
     bool valid;
     regmask_t needs_helpers;
-@@ -1684,24 +1673,6 @@ instr_mark_helpers(struct ir3_compiler *compiler,
+@@ -1676,24 +1665,6 @@ instr_mark_helpers(struct ir3_compiler *compiler,
     case OPC_DSY:
     case OPC_DSXPP_1:
     case OPC_DSYPP_1: {
@@ -234,6 +232,3 @@ index 8efa5d94a0f2..8abc96990ccb 100644
        /* These instructions don't use helpers themselves but have a src that
         * needs to be calculated using helpers (e.g., the coordinates used to
         * calculate derivatives). Mark the src register as needing helpers so
--- 
-GitLab
-
