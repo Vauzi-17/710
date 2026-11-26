@@ -1,0 +1,822 @@
+name: Build & Release (All Branches)
+
+on:
+  #schedule:
+    # Every Sunday 00:00 UTC (07:00 WIB).
+    #- cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 4.7. Empty = auto-increment from latest release (4.6 -> 4.7)'
+        required: false
+        type: string
+        default: ''
+      changes:
+        description: 'Custom notes under "Changes in vX", separated by ";" (optional)'
+        required: false
+        type: string
+        default: ''
+      mesa_ref:
+        description: 'Mesa branch, tag, or full 40-char commit hash (shared across all branches)'
+        required: false
+        type: string
+        default: 'main'
+      build_main:
+        description: 'Build main branch — Regular / Universal (vX.zip)'
+        required: false
+        type: boolean
+        default: true
+      build_sw:
+        description: 'Build sw-2 branch — Switch (vX-sw.zip)'
+        required: false
+        type: boolean
+        default: true
+      build_win:
+        description: 'Build win branch — Winlator / Windows (vX-win.zip)'
+        required: false
+        type: boolean
+        default: true
+      build_unified:
+        description: 'Build unified branch — Unified (vX-unified.zip)'
+        required: false
+        type: boolean
+        default: true
+      build_vita:
+        description: 'Build vita branch — Vita3K (vX-vita.zip)'
+        required: false
+        type: boolean
+        default: true
+      extra_branches:
+        description: 'Extra branches to build (comma-separated, "branch" or "branch:suffix", e.g. "sw:sw-legacy")'
+        required: false
+        type: string
+        default: ''
+      include_default_env:
+        description: 'Attach default_env.conf to release (from unified, fallback win/vita/sw-2)'
+        required: false
+        type: boolean
+        default: true
+      glibc:
+        description: 'Also build experimental glibc (Winlator) .tzst'
+        required: false
+        type: boolean
+        default: false
+      glibc_branch:
+        description: 'Branch to build glibc .tzst from (only used if glibc is checked)'
+        required: false
+        type: choice
+        default: 'win'
+        options:
+          - win
+          - unified
+          - sw-2
+          - vita
+          - main
+          - glibc
+      zink:
+        description: 'Also build Zink (libEGL_mesa.so + libgallium_dri.so) from unified (artifact only)'
+        required: false
+        type: boolean
+        default: false
+      release:
+        description: 'Publish a GitHub Release (off = build and upload workflow artifacts only)'
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: 'Create the GitHub Release as a draft'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        type: boolean
+        default: false
+      replace:
+        description: 'Replace an existing release/tag with the same version (deleted only after builds succeed)'
+        required: false
+        type: boolean
+        default: false
+      allow_partial:
+        description: 'Publish release even if one or more branch builds fail (skips failed branches)'
+        required: false
+        type: boolean
+        default: false
+      include_sha256:
+        description: 'Include collapsible SHA-256 checksums section in release notes'
+        required: false
+        type: boolean
+        default: false
+
+# Share the same release concurrency group as turnip_builder.yml so two runs
+# never auto-pick the same version number.
+concurrency:
+  group: turnip-release
+  cancel-in-progress: false
+
+env:
+  MESA_REPO: https://gitlab.freedesktop.org/mesa/mesa
+
+jobs:
+  prepare:
+    name: Prepare release matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      mesa_commit: ${{ steps.resolve.outputs.mesa_commit }}
+      mesa_ref_display: ${{ steps.resolve.outputs.mesa_ref_display }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      has_android: ${{ steps.resolve.outputs.has_android }}
+      skip: ${{ steps.resolve.outputs.skip }}
+      do_release: ${{ steps.resolve.outputs.do_release }}
+      include_default_env: ${{ steps.resolve.outputs.include_default_env }}
+      glibc: ${{ steps.resolve.outputs.glibc }}
+      glibc_branch: ${{ steps.resolve.outputs.glibc_branch }}
+      glibc_suffix: ${{ steps.resolve.outputs.glibc_suffix }}
+      zink: ${{ steps.resolve.outputs.zink }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      replace: ${{ steps.resolve.outputs.replace }}
+      allow_partial: ${{ steps.resolve.outputs.allow_partial }}
+      include_sha256: ${{ steps.resolve.outputs.include_sha256 }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Resolve version, Mesa commit, and branch matrix
+      id: resolve
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT_NAME: ${{ github.event_name }}
+        INPUT_VERSION: ${{ inputs.version }}
+        MESA_REF: ${{ inputs.mesa_ref || 'main' }}
+        BUILD_MAIN: ${{ github.event_name == 'schedule' || inputs.build_main }}
+        BUILD_SW: ${{ github.event_name == 'schedule' || inputs.build_sw }}
+        BUILD_WIN: ${{ github.event_name == 'schedule' || inputs.build_win }}
+        BUILD_UNIFIED: ${{ github.event_name == 'schedule' || inputs.build_unified }}
+        BUILD_VITA: ${{ github.event_name == 'schedule' || inputs.build_vita }}
+        EXTRA_BRANCHES: ${{ inputs.extra_branches }}
+        INCLUDE_DEFAULT_ENV: ${{ github.event_name == 'schedule' || inputs.include_default_env }}
+        GLIBC: ${{ github.event_name != 'schedule' && inputs.glibc }}
+        GLIBC_BRANCH: ${{ inputs.glibc_branch || 'win' }}
+        ZINK: ${{ github.event_name != 'schedule' && inputs.zink }}
+        DO_RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
+        DRAFT: ${{ github.event_name != 'schedule' && inputs.draft }}
+        PRERELEASE: ${{ github.event_name != 'schedule' && inputs.prerelease }}
+        REPLACE: ${{ github.event_name != 'schedule' && inputs.replace }}
+        ALLOW_PARTIAL: ${{ github.event_name != 'schedule' && inputs.allow_partial }}
+        INCLUDE_SHA256: ${{ github.event_name != 'schedule' && inputs.include_sha256 }}
+      run: |
+        set -euo pipefail
+
+        # 1. Resolve release version
+        releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                     --jq '.[] | select(.draft == false) | .tag_name')
+        latest=$(echo "$releases" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1 || true)
+
+        if [ -n "$INPUT_VERSION" ]; then
+          version="$INPUT_VERSION"
+        elif [ -z "$latest" ]; then
+          echo "::error::No previous release found; run the workflow once with an explicit version."
+          exit 1
+        else
+          major=${latest%%.*}
+          rest=${latest#*.}
+          minor=${rest%%.*}
+          if [ "$minor" -ge 9 ]; then
+            version="$((major + 1)).0"
+          else
+            version="${major}.$((minor + 1))"
+          fi
+        fi
+        echo "Previous release: ${latest:-none}, this build: ${version}"
+
+        if [ "$DO_RELEASE" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; then
+          if [ "$REPLACE" = "true" ]; then
+            echo "::notice::Release ${version} exists and will be replaced once the new build succeeds."
+          else
+            echo "::error::Tag ${version} already exists. Pick another version, or enable 'replace' to rebuild it."
+            exit 1
+          fi
+        fi
+
+        # 2. Pin Mesa commit once so every branch builds the exact same Mesa revision
+        refs=$(git ls-remote "$MESA_REPO" "refs/heads/${MESA_REF}" "refs/tags/${MESA_REF}" "refs/tags/${MESA_REF}^{}")
+        mesa_commit=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$refs")
+        [ -n "$mesa_commit" ] || mesa_commit=$(awk 'NR == 1 {print $1}' <<< "$refs")
+        if [ -z "$mesa_commit" ]; then
+          if [[ "$MESA_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            mesa_commit="$MESA_REF"
+          else
+            echo "::error::Mesa ref '${MESA_REF}' not found. Use a branch, tag, or full 40-character commit hash."
+            exit 1
+          fi
+        fi
+        echo "Mesa ${MESA_REF}: ${mesa_commit}"
+
+        # 3. Build and validate the Android branch matrix
+        matrix_json=$(python3 - <<'PY'
+        import json, os, re, subprocess, sys
+
+        entries = []
+        defaults = [
+            ("BUILD_MAIN",    {"key": "main",    "branch": "main",    "suffix": "",        "label": "Regular / Universal"}),
+            ("BUILD_SW",      {"key": "sw",      "branch": "sw-2",    "suffix": "sw",      "label": "Switch"}),
+            ("BUILD_WIN",     {"key": "win",     "branch": "win",     "suffix": "win",     "label": "Winlator"}),
+            ("BUILD_UNIFIED", {"key": "unified", "branch": "unified", "suffix": "unified", "label": "Unified"}),
+            ("BUILD_VITA",    {"key": "vita",    "branch": "vita",    "suffix": "vita",    "label": "Vita3K"}),
+        ]
+        for env_key, item in defaults:
+            if os.environ.get(env_key, "").lower() == "true":
+                entries.append(item)
+
+        extra = os.environ.get("EXTRA_BRANCHES", "").strip()
+        if extra:
+            for raw in extra.split(","):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                if ":" in raw:
+                    branch, suffix = raw.split(":", 1)
+                    branch, suffix = branch.strip(), suffix.strip()
+                else:
+                    branch = raw
+                    suffix = "" if branch == "main" else branch
+                if not branch:
+                    continue
+                key = re.sub(r"[^a-zA-Z0-9_-]+", "-", (suffix or branch).lower()).strip("-") or "custom"
+                entries.append({
+                    "key": key,
+                    "branch": branch,
+                    "suffix": suffix,
+                    "label": branch,
+                })
+
+        # Ensure no duplicate keys or output suffixes
+        seen_keys = set()
+        seen_suffixes = set()
+        for e in entries:
+            if e["key"] in seen_keys:
+                print(f"::error::Duplicate build key '{e['key']}' for branch '{e['branch']}'.", file=sys.stderr)
+                sys.exit(1)
+            if e["suffix"] in seen_suffixes:
+                print(f"::error::Duplicate file suffix '{e['suffix']}' for branch '{e['branch']}'.", file=sys.stderr)
+                sys.exit(1)
+            seen_keys.add(e["key"])
+            seen_suffixes.add(e["suffix"])
+
+        # Validate every selected branch exists on origin
+        for e in entries:
+            res = subprocess.run(
+                ["git", "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{e['branch']}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if res.returncode != 0:
+                print(f"::error::Branch '{e['branch']}' does not exist on origin.", file=sys.stderr)
+                sys.exit(1)
+
+        print(json.dumps(entries, separators=(",", ":")))
+        PY
+        )
+
+        count=$(jq 'length' <<< "$matrix_json")
+        if [ "$count" -gt 0 ]; then
+          has_android=true
+        else
+          has_android=false
+          # GitHub Actions rejects an empty matrix array even when the job is skipped.
+          matrix_json='[{"key":"noop","branch":"main","suffix":"","label":"noop"}]'
+        fi
+
+        if [ "$has_android" = "false" ] && [ "$GLIBC" != "true" ] && [ "$ZINK" != "true" ]; then
+          echo "::error::Nothing selected to build. Enable at least one branch, glibc, or zink."
+          exit 1
+        fi
+
+        # Validate glibc_branch when glibc is enabled
+        case "$GLIBC_BRANCH" in
+          main) glibc_suffix="" ;;
+          sw-2) glibc_suffix="sw" ;;
+          *)    glibc_suffix="$GLIBC_BRANCH" ;;
+        esac
+        if [ "$GLIBC" = "true" ]; then
+          if ! git ls-remote --exit-code --heads origin "refs/heads/${GLIBC_BRANCH}" >/dev/null; then
+            echo "::error::glibc_branch '${GLIBC_BRANCH}' does not exist on origin."
+            exit 1
+          fi
+        fi
+
+        # 4. Skip scheduled runs when neither Mesa nor any selected branch changed since the latest release
+        skip=false
+        if [ "$EVENT_NAME" = "schedule" ] && [ -n "$latest" ]; then
+          prev_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${latest}")
+          prev_mesa=$(jq -r '.body // ""' <<< "$prev_json" | grep -oE 'mesa/-/commit/[0-9a-f]{40}' | head -n1 | cut -d/ -f3 || true)
+          prev_pub=$(jq -r '.published_at // ""' <<< "$prev_json")
+          branch_changed=0
+          if [ -n "$prev_pub" ]; then
+            for b in $(jq -r '.[].branch' <<< "$matrix_json"); do
+              git fetch -q --depth=1 origin "$b"
+              commit_date=$(git log -1 --format=%cI FETCH_HEAD)
+              if [[ "$commit_date" > "$prev_pub" ]]; then
+                branch_changed=1
+                break
+              fi
+            done
+          else
+            branch_changed=1
+          fi
+          echo "Mesa: previous ${prev_mesa:-unknown}. Any branch updated since ${latest}: ${branch_changed}"
+          if [ -n "$prev_mesa" ] && [ "$prev_mesa" = "$mesa_commit" ] && [ "$branch_changed" = "0" ]; then
+            skip=true
+            echo "Nothing changed since ${latest}, skipping scheduled build." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
+
+        echo "Selected Android matrix (${count} branch(es)): ${matrix_json}"
+        {
+          echo "### Multi-Branch Build Plan (v${version})"
+          echo "- **Mesa**: \`${MESA_REF}\` -> \`${mesa_commit:0:12}\`"
+          echo "- **Android branches (${count})**: $(jq -r 'if length == 0 then "none" else map("`" + .branch + "` (" + (if .suffix == "" then "v" + $v + ".zip" else "v" + $v + "-" + .suffix + ".zip" end) + ")") | join(", ") end' --arg v "$version" <<< "$([ "$has_android" = "true" ] && echo "$matrix_json" || echo "[]")")"
+          echo "- **Options**: \`default_env.conf=${INCLUDE_DEFAULT_ENV}\`, \`glibc=${GLIBC}\` (\`${GLIBC_BRANCH}\`), \`zink=${ZINK}\`, \`release=${DO_RELEASE}\`, \`draft=${DRAFT}\`, \`prerelease=${PRERELEASE}\`, \`replace=${REPLACE}\`, \`allow_partial=${ALLOW_PARTIAL}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        {
+          echo "version=${version}"
+          echo "mesa_commit=${mesa_commit}"
+          echo "mesa_ref_display=${MESA_REF}"
+          echo "matrix=${matrix_json}"
+          echo "has_android=${has_android}"
+          echo "skip=${skip}"
+          echo "do_release=${DO_RELEASE}"
+          echo "include_default_env=${INCLUDE_DEFAULT_ENV}"
+          echo "glibc=${GLIBC}"
+          echo "glibc_branch=${GLIBC_BRANCH}"
+          echo "glibc_suffix=${glibc_suffix}"
+          echo "zink=${ZINK}"
+          echo "draft=${DRAFT}"
+          echo "prerelease=${PRERELEASE}"
+          echo "replace=${REPLACE}"
+          echo "allow_partial=${ALLOW_PARTIAL}"
+          echo "include_sha256=${INCLUDE_SHA256}"
+        } >> "$GITHUB_OUTPUT"
+
+  build_android:
+    name: Android (${{ matrix.label }} / ${{ matrix.branch }})
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.has_android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}${{ matrix.suffix != '' && format('-{0}', matrix.suffix) || '' }}
+      BUILD_TARGET: android
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: all
+      NDK_VERSION: android-ndk-r29
+      # Clear runner-provided NDK so the build always uses NDK_VERSION.
+      ANDROID_NDK_HOME: ''
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+      MATRIX_KEY: ${{ matrix.key }}
+      MATRIX_BRANCH: ${{ matrix.branch }}
+      MATRIX_SUFFIX: ${{ matrix.suffix }}
+      MATRIX_LABEL: ${{ matrix.label }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ matrix.branch }}
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache zip unzip pkg-config python3-pip
+        # Mesa main needs a newer meson than Ubuntu 24.04 ships.
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: turnip_workdir/${{ env.NDK_VERSION }}
+        key: ndk-${{ env.NDK_VERSION }}
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-android-${{ matrix.key }}-${{ github.run_id }}
+        restore-keys: |
+          ccache-android-${{ matrix.key }}-
+          ccache-android-
+
+    - name: Execute build script
+      run: |
+        set -o pipefail
+        bash ./turnip_builder.sh 2>&1 | tee "build-android-${MATRIX_KEY}.log"
+
+    - name: Collect branch metadata and default_env.conf
+      run: |
+        python3 - <<'PY'
+        import json, os, re, shutil, subprocess
+        from pathlib import Path
+
+        out_dir = Path("out")
+        patch_dir = Path("patches")
+
+        def patch_description(path: Path) -> str:
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                return ""
+            if path.suffix in (".patch", ".diff"):
+                m = re.search(r"^Subject:\s*(?:\[[^\]]*\]\s*)?(.+)$", text, re.M)
+                return m.group(1).strip() if m else ""
+            if path.suffix == ".py":
+                m = re.search(r'^\s*(?:"""|\'\'\')\s*\n?\s*(.+)$', text, re.M)
+                if m:
+                    return m.group(1).strip().rstrip("\"'").rstrip(".")
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("#") and not line.startswith("#!"):
+                    desc = line.lstrip("#").strip()
+                    if desc:
+                        return desc.rstrip(".")
+            return ""
+
+        patches = []
+        seen = set()
+        for log_path in sorted(out_dir.glob("patches-*.txt")):
+            if log_path.name.startswith("patches-glibc-"):
+                continue
+            for line in log_path.read_text(errors="replace").splitlines():
+                if "\t" not in line:
+                    continue
+                name, status = line.split("\t", 1)
+                if name in seen:
+                    continue
+                seen.add(name)
+                patches.append({
+                    "name": name,
+                    "status": status.strip(),
+                    "description": patch_description(patch_dir / name),
+                })
+
+        commit = subprocess.check_output(["git", "rev-parse", "--short=12", "HEAD"], text=True).strip()
+        zips = sorted(p.name for p in out_dir.glob("*.zip"))
+
+        meta = {
+            "key": os.environ["MATRIX_KEY"],
+            "branch": os.environ["MATRIX_BRANCH"],
+            "suffix": os.environ["MATRIX_SUFFIX"],
+            "label": os.environ["MATRIX_LABEL"],
+            "release_version": os.environ["RELEASE_VERSION"],
+            "build_version": os.environ["BUILD_VERSION"],
+            "commit": commit,
+            "zips": zips,
+            "patches": patches,
+        }
+        (out_dir / "branch-meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        default_env = patch_dir / "default_env.conf"
+        if default_env.exists():
+            shutil.copy2(default_env, out_dir / "default_env.conf")
+        PY
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-android-${{ matrix.key }}
+        path: |
+          out/
+          build-android-${{ matrix.key }}.log
+        if-no-files-found: warn
+
+  build_glibc:
+    name: glibc (${{ needs.prepare.outputs.glibc_branch }})
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.glibc == 'true'
+    # Native arm64 build. Override with the GLIBC_RUNNER repository variable if needed.
+    runs-on: ${{ vars.GLIBC_RUNNER || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}${{ needs.prepare.outputs.glibc_suffix != '' && format('-{0}', needs.prepare.outputs.glibc_suffix) || '' }}
+      BUILD_TARGET: glibc
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      BUILD_VARIANTS: all
+      GLIBC_BRANCH: ${{ needs.prepare.outputs.glibc_branch }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.prepare.outputs.glibc_branch }}
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache pkg-config python3-pip \
+          zstd binutils libdrm-dev zlib1g-dev libexpat1-dev \
+          libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxxf86vm-dev libxshmfence-dev \
+          libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev \
+          libxcb-randr0-dev libxcb-shm0-dev
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-glibc-${{ needs.prepare.outputs.glibc_branch }}-${{ github.run_id }}
+        restore-keys: |
+          ccache-glibc-${{ needs.prepare.outputs.glibc_branch }}-
+          ccache-glibc-
+
+    - name: Execute build script
+      run: |
+        set -o pipefail
+        bash ./turnip_builder.sh 2>&1 | tee build-glibc.log
+
+    - name: Collect glibc metadata
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        from pathlib import Path
+
+        out_dir = Path("out")
+        patch_dir = Path("patches")
+
+        def patch_description(path: Path) -> str:
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                return ""
+            if path.suffix in (".patch", ".diff"):
+                m = re.search(r"^Subject:\s*(?:\[[^\]]*\]\s*)?(.+)$", text, re.M)
+                return m.group(1).strip() if m else ""
+            if path.suffix == ".py":
+                m = re.search(r'^\s*(?:"""|\'\'\')\s*\n?\s*(.+)$', text, re.M)
+                if m:
+                    return m.group(1).strip().rstrip("\"'").rstrip(".")
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("#") and not line.startswith("#!"):
+                    desc = line.lstrip("#").strip()
+                    if desc:
+                        return desc.rstrip(".")
+            return ""
+
+        glibc_patches = []
+        seen = set()
+        for log_path in sorted(out_dir.glob("patches-glibc-*.txt")):
+            for line in log_path.read_text(errors="replace").splitlines():
+                if "\t" not in line:
+                    continue
+                name, status = line.split("\t", 1)
+                if name in seen:
+                    continue
+                seen.add(name)
+                glibc_patches.append({
+                    "name": name,
+                    "status": status.strip(),
+                    "description": patch_description(patch_dir / name),
+                })
+
+        meta = {
+            "branch": os.environ["GLIBC_BRANCH"],
+            "release_version": os.environ["RELEASE_VERSION"],
+            "build_version": os.environ["BUILD_VERSION"],
+            "tzsts": sorted(p.name for p in out_dir.glob("*.tzst")),
+            "glibc_patches": glibc_patches,
+        }
+        (out_dir / "glibc-meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        PY
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: turnip-glibc
+        path: |
+          out/
+          build-glibc.log
+        if-no-files-found: warn
+
+  build_zink:
+    name: Zink (Android / artifact only)
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.zink == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_TARGET: zink
+      MESA_REF: ${{ needs.prepare.outputs.mesa_commit }}
+      NDK_VERSION: android-ndk-r29
+      ANDROID_NDK_HOME: ''
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: unified
+
+    - name: Prepare environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential flex bison glslang-tools ninja-build ccache zip unzip pkg-config patchelf python3-pip
+        sudo python3 -m pip install --quiet --break-system-packages meson mako packaging pyyaml
+        meson --version
+
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: turnip_workdir/${{ env.NDK_VERSION }}
+        key: ndk-${{ env.NDK_VERSION }}
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-zink-${{ github.run_id }}
+        restore-keys: ccache-zink-
+
+    - name: Execute build script
+      run: |
+        set -o pipefail
+        bash ./turnip_builder.sh 2>&1 | tee build-zink.log
+
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo "### Zink build"
+          if [ -f out/build-info.env ]; then grep -E '^(MESA_COMMIT|MESA_VERSION)=' out/build-info.env | sed 's/^/- /'; fi
+          echo
+          if [ -f out/zink-libs.txt ]; then echo '```'; cat out/zink-libs.txt; echo '```'; fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload build output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zink-android
+        path: |
+          out/
+          build-zink.log
+        if-no-files-found: warn
+
+  release:
+    name: Assemble & Publish Release
+    needs: [prepare, build_android, build_glibc, build_zink]
+    if: >-
+      always() &&
+      needs.prepare.outputs.skip != 'true' &&
+      (needs.prepare.outputs.has_android == 'true' || needs.prepare.outputs.glibc == 'true') &&
+      needs.build_android.result != 'cancelled' &&
+      needs.build_glibc.result != 'cancelled' &&
+      (
+        needs.prepare.outputs.allow_partial == 'true' ||
+        (
+          (needs.build_android.result == 'success' || needs.build_android.result == 'skipped') &&
+          (needs.build_glibc.result == 'success' || needs.build_glibc.result == 'skipped')
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      MESA_REF_DISPLAY: ${{ needs.prepare.outputs.mesa_ref_display }}
+      INCLUDE_DEFAULT_ENV: ${{ needs.prepare.outputs.include_default_env }}
+      INCLUDE_SHA256: ${{ needs.prepare.outputs.include_sha256 }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download build outputs
+      uses: actions/download-artifact@v4
+      with:
+        pattern: turnip-*
+        path: collected
+
+    - name: Collect release packages and default_env.conf
+      run: |
+        set -euo pipefail
+        mkdir -p release
+
+        # Copy every built .zip and .tzst from all succeeded branches.
+        shopt -s nullglob
+        for f in collected/turnip-*/out/*.zip collected/turnip-*/out/*.tzst; do
+          cp -v "$f" release/
+        done
+
+        pkg_count=$(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tzst' \) | wc -l)
+        if [ "$pkg_count" -eq 0 ]; then
+          echo "::error::No release packages (.zip / .tzst) were produced by any build job."
+          exit 1
+        fi
+
+        # Select default_env.conf: unified -> win -> vita -> sw -> any other built branch -> git fallback
+        if [ "$INCLUDE_DEFAULT_ENV" = "true" ]; then
+          env_src=""
+          for candidate in \
+            collected/turnip-android-unified/out/default_env.conf \
+            collected/turnip-android-win/out/default_env.conf \
+            collected/turnip-android-vita/out/default_env.conf \
+            collected/turnip-android-sw/out/default_env.conf; do
+            if [ -f "$candidate" ]; then
+              env_src="$candidate"
+              break
+            fi
+          done
+          if [ -z "$env_src" ]; then
+            for candidate in collected/turnip-android-*/out/default_env.conf; do
+              if [ -f "$candidate" ]; then
+                env_src="$candidate"
+                break
+              fi
+            done
+          fi
+          if [ -n "$env_src" ]; then
+            cp -v "$env_src" release/default_env.conf
+            echo "Selected default_env.conf from: ${env_src}"
+          else
+            # Fallback if none of the selected branches carried default_env.conf (e.g. main-only run)
+            for fallback_branch in unified win vita sw-2; do
+              if git fetch -q --depth=1 origin "$fallback_branch" 2>/dev/null && \
+                 git show "FETCH_HEAD:patches/default_env.conf" > release/default_env.conf 2>/dev/null; then
+                echo "Selected default_env.conf via git fallback from branch: ${fallback_branch}"
+                break
+              fi
+              rm -f release/default_env.conf
+            done
+          fi
+        fi
+
+        echo "=== Final release/ contents ==="
+        ls -lh release/
+
+    - name: Generate release notes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CHANGES: ${{ inputs.changes }}
+        COLLECTED_DIR: ${{ github.workspace }}/collected
+        RELEASE_DIR: ${{ github.workspace }}/release
+      run: |
+        set -euo pipefail
+        python3 release_notes_multi.py > RELEASE_NOTES.md
+        cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload release notes artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-notes-v${{ env.RELEASE_VERSION }}
+        path: RELEASE_NOTES.md
+
+    # Only reached after builds succeeded (and packages are verified), so a
+    # failed rebuild leaves any existing release intact.
+    - name: Delete the release being replaced
+      if: needs.prepare.outputs.do_release == 'true' && needs.prepare.outputs.replace == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if gh release view "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release delete "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          echo "Deleted the old release ${RELEASE_VERSION} and its tag."
+        fi
+        # The tag can exist without a release.
+        if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_VERSION}" >/dev/null; then
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_VERSION}"
+        fi
+
+    - name: Publish GitHub Release
+      if: needs.prepare.outputs.do_release == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.RELEASE_VERSION }}
+        name: Turnip Adreno 710,720,722 v${{ env.RELEASE_VERSION }}
+        body_path: RELEASE_NOTES.md
+        draft: ${{ needs.prepare.outputs.draft == 'true' }}
+        prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+        files: release/*
+        fail_on_unmatched_files: true
